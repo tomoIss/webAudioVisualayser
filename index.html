@@ -3,9 +3,9 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Demucs Player — GitHub Pages 版</title>
+<title>Demucs Player — GitHub Pages (改良版・詳細ログ付き)</title>
 
-<!-- 外部ライブラリ（CDN） -->
+<!-- CDN -->
 <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
 
@@ -20,17 +20,18 @@
   .meta{display:flex;justify-content:space-between;align-items:center;margin-top:8px}
   .small{font-size:13px;color:#a6b1c6}
   input[type=file]{display:none}
-  .btn{background:linear-gradient(90deg,var(--accent),#4ade80);color:#012; border:none;padding:10px 14px;border-radius:10px;font-weight:600}
-  .btn:disabled{opacity:.5;transform:none}
+  .btn{background:linear-gradient(90deg,var(--accent),#4ade80);color:#012;border:none;padding:10px 14px;border-radius:10px;font-weight:600}
+  .btn:disabled{opacity:.5}
   label{display:block}
   .row{display:flex;gap:8px;align-items:center}
+  pre{white-space:pre-wrap;word-break:break-word;background:#071018;padding:8px;border-radius:8px;color:#9fbfd6}
 </style>
 </head>
 <body>
 <main>
   <header>
     <h1 style="margin:0;font-size:20px">Demucs Player</h1>
-    <div class="small">GitHub Pages 用 — iPad/Safari 対応（ユーザー操作必須）</div>
+    <div class="small">GitHub Pages 用 — ログ多めの診断版</div>
   </header>
 
   <section class="panel">
@@ -56,6 +57,8 @@
     </div>
 
     <canvas id="viz"></canvas>
+    <h4 class="small">デバッグログ（表示して開発者に見せてください）</h4>
+    <pre id="log"></pre>
   </section>
 
   <!-- file inputs hidden -->
@@ -64,13 +67,8 @@
 </main>
 
 <script>
-/*
-  Demucs Player (GitHub Pages向け) — 説明
-  - ZIP または 2ファイル選択に対応
-  - WebAudio を使って再生・ビジュアライザ
-  - AudioContext はユーザー操作（load または play）で初期化
-  - decodeAudioData に失敗したトラックは <audio> フォールバック
-*/
+const logEl = document.getElementById('log');
+function log(...args){ console.log(...args); logEl.textContent += Array.from(args).map(a=>typeof a==='object'?JSON.stringify(a):String(a)).join(' ') + '\n'; logEl.scrollTop = 1e9; }
 
 const loadZipBtn = document.getElementById('loadZip');
 const loadFilesBtn = document.getElementById('loadFiles');
@@ -83,7 +81,6 @@ const filenameEl = document.getElementById('filename');
 const statusEl = document.getElementById('status');
 const zipInput = document.getElementById('zipInput');
 const filesInput = document.getElementById('filesInput');
-
 const canvas = document.getElementById('viz');
 const ctx = canvas.getContext('2d');
 
@@ -93,201 +90,170 @@ let masterGain = null, gainV = null, gainB = null;
 let tracks = { vocals: null, backing: null };
 let activeSources = { vocals: null, backing: null };
 let isPlaying = false;
-let startTimestamp = 0;
-let pausedAt = 0;
 
-function ensureAudioCtx() {
+function ensureAudioCtx(){
   if(audioCtx) return;
-  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  analyser = audioCtx.createAnalyser(); analyser.fftSize = 512;
-  masterGain = audioCtx.createGain();
-  gainV = audioCtx.createGain();
-  gainB = audioCtx.createGain();
-
-  // routing: vocals/back -> gainV/gainB -> masterGain -> analyser -> destination
-  gainV.connect(masterGain); gainB.connect(masterGain);
-  masterGain.connect(analyser);
-  analyser.connect(audioCtx.destination);
-
-  updateControlsFromSliders();
+  try{
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    analyser = audioCtx.createAnalyser(); analyser.fftSize = 512;
+    masterGain = audioCtx.createGain(); gainV = audioCtx.createGain(); gainB = audioCtx.createGain();
+    gainV.connect(masterGain); gainB.connect(masterGain); masterGain.connect(analyser); analyser.connect(audioCtx.destination);
+    log('AudioContext created, state=', audioCtx.state);
+    updateControlsFromSliders();
+  }catch(e){
+    log('AudioContext creation failed:', e);
+  }
 }
 
 function updateControlsFromSliders(){
-  const v = Number(mixSlider.value);
-  const master = Number(masterSlider.value);
-  if(gainV && gainB) { gainV.gain.value = v; gainB.gain.value = 1 - v; }
-  if(masterGain) masterGain.gain.value = master;
+  const v = Number(mixSlider.value); const m = Number(masterSlider.value);
+  if(gainV && gainB){ gainV.gain.value = v; gainB.gain.value = 1 - v; }
+  if(masterGain) masterGain.gain.value = m;
 }
 
-// ==== decoding / fallback ====
-async function decodeAudio(arrayBuffer) {
-  ensureAudioCtx();
+async function decodeAudio(arrayBuffer){
+  // try decode; if fails return media element fallback
   try{
-    // decode with main context
-    const buffer = await audioCtx.decodeAudioData(arrayBuffer.slice(0));
-    return { mode: 'buffer', buffer };
+    ensureAudioCtx();
+    const buf = await audioCtx.decodeAudioData(arrayBuffer.slice(0));
+    log('decodeAudio OK, length(s):', buf.length, 'sr:', buf.sampleRate);
+    return { mode:'buffer', buffer:buf };
   }catch(e){
-    // fallback to media element
+    log('decodeAudio failed - will fallback to media element:', e);
     const blob = new Blob([arrayBuffer]);
     const url = URL.createObjectURL(blob);
     const el = new Audio(url);
     el.preload = 'auto';
-    return { mode: 'media', el };
+    return { mode:'media', el };
   }
 }
 
 async function prepareFromFile(file, role){
   statusEl.textContent = `"${file.name}" を読み込み中...`;
+  log('prepareFromFile', file.name, role);
   try{
     const arrayBuffer = await file.arrayBuffer();
-    const track = await decodeAudio(arrayBuffer);
-    tracks[role] = { fileName: file.name, ...track };
+    const t = await decodeAudio(arrayBuffer);
+    tracks[role] = { fileName: file.name, ...t };
     filenameEl.textContent = `${tracks.vocals?.fileName || '—'}  /  ${tracks.backing?.fileName || '—'}`;
     statusEl.textContent = '読み込み完了';
     playBtn.disabled = false; stopBtn.disabled = false;
-  }catch(err){
-    console.error(err);
-    statusEl.textContent = '読み込みエラー';
-    alert('ファイルの読み込みに失敗しました');
-  }
+    log('track prepared', role, tracks[role]);
+  }catch(err){ log('prepare error', err); statusEl.textContent='読み込みエラー'; alert('ファイルの読み込みに失敗しました'); }
 }
 
-// ==== ZIP loader ====
+// ZIP loader
 loadZipBtn.addEventListener('click', ()=> zipInput.click());
 zipInput.addEventListener('change', async ()=>{
-  const file = zipInput.files[0];
-  zipInput.value = '';
-  if(!file) return;
-  statusEl.textContent = 'ZIP を展開中...';
+  const file = zipInput.files[0]; zipInput.value = '';
+  if(!file) return; statusEl.textContent='ZIP を展開中...'; log('ZIP select', file.name);
   try{
     const zip = await JSZip.loadAsync(file);
-    let vEntry=null, bEntry=null;
-    zip.forEach((path, entry)=>{
+    let vEntry=null,bEntry=null;
+    zip.forEach((path,entry)=>{
       const n = entry.name.toLowerCase();
       if(n.includes('vocals') && n.match(/\.(wav|mp3|m4a|aac)$/)) vEntry=entry;
       if((n.includes('no_vocals')||n.includes('back')||n.includes('inst')) && n.match(/\.(wav|mp3|m4a|aac)$/)) bEntry=entry;
     });
-    if(!vEntry || !bEntry) { alert('zip内にvocals / backingが見つかりません'); statusEl.textContent='対象ファイルが見つかりません'; return; }
-
-    // ensure AudioContext creation is in user gesture (we are in click handler) — safe
-    ensureAudioCtx();
-
+    if(!vEntry||!bEntry){ statusEl.textContent='対象ファイル不足'; alert('zip内にvocals/backを見つけられません'); return; }
+    log('zip entries', vEntry.name, bEntry.name);
     const vBuf = await vEntry.async('arraybuffer');
     const bBuf = await bEntry.async('arraybuffer');
-
+    // decode AFTER user gesture when possible — but here decoding to detect mode is OK
     const t1 = await decodeAudio(vBuf);
     const t2 = await decodeAudio(bBuf);
-
     tracks.vocals = { fileName: vEntry.name, ...t1 };
     tracks.backing = { fileName: bEntry.name, ...t2 };
-
     filenameEl.textContent = `${tracks.vocals.fileName} / ${tracks.backing.fileName}`;
-    statusEl.textContent = 'ZIP 読み込み完了';
-    playBtn.disabled = false; stopBtn.disabled = false;
-  }catch(err){ console.error(err); alert('ZIP 読み込みに失敗しました'); statusEl.textContent='読み込みエラー'; }
+    statusEl.textContent = 'ZIP 読み込み完了'; log('tracks set', tracks);
+  }catch(e){ log('zip error', e); statusEl.textContent='ZIP読み込み失敗'; alert('ZIP 読み込みに失敗しました'); }
 });
 
-// ==== Files loader (2 files) ====
+// Files loader
 loadFilesBtn.addEventListener('click', ()=> filesInput.click());
 filesInput.addEventListener('change', async ()=>{
-  const files = Array.from(filesInput.files);
-  filesInput.value = '';
-  if(files.length < 2){ alert('2 ファイルを選んでください（vocals と backing）'); return; }
-
-  // simple heuristic to pick vocals/backing
-  const vocalsFile = files.find(f => /vocals/i.test(f.name)) || files[0];
-  const backingFile = files.find(f => /no_vocals|back|inst/i.test(f.name)) || files[1];
-
-  ensureAudioCtx();
+  const files = Array.from(filesInput.files); filesInput.value='';
+  if(files.length < 2){ alert('2 ファイルを選択してください'); return; }
+  const vocalsFile = files.find(f=>/vocals/i.test(f.name)) || files[0];
+  const backingFile = files.find(f=>/no_vocals|back|inst/i.test(f.name)) || files[1];
   await prepareFromFile(vocalsFile, 'vocals');
   await prepareFromFile(backingFile, 'backing');
 });
 
-// ==== playback control ====
+// playback
 function stopPlayback(){
   // stop buffer sources
-  for(const role of ['vocals','backing']){
-    const src = activeSources[role];
-    if(src && src.stop) try{ src.stop(); }catch(e){}
-    activeSources[role] = null;
+  for(const r of ['vocals','backing']){
+    const s = activeSources[r]; if(s && s.stop) try{ s.stop(); }catch(e){ log('stop src err', e); }
+    activeSources[r] = null;
   }
-  // pause media elements
-  for(const role of ['vocals','backing']){
-    const t = tracks[role];
-    if(t?.mode === 'media' && t.el){ t.el.pause(); t.el.currentTime = 0; }
+  // stop media elements
+  for(const r of ['vocals','backing']){
+    const t = tracks[r]; if(t?.mode==='media' && t.el){ try{ t.el.pause(); t.el.currentTime=0; }catch(e){ log('pause err', e);} }
   }
-  isPlaying = false; playBtn.textContent = '再生'; statusEl.textContent = '停止中';
+  isPlaying=false; playBtn.textContent='再生'; statusEl.textContent='停止中'; log('stopped');
 }
 
 async function startPlayback(){
   if(!tracks.vocals || !tracks.backing) return alert('ファイルを読み込んでください');
   ensureAudioCtx();
-  if(audioCtx.state === 'suspended') await audioCtx.resume();
-
-  stopPlayback();
-
-  updateControlsFromSliders();
-  const now = audioCtx.currentTime;
-
-  // if both are buffer mode -> create BufferSource and start at same time
-  const bothBuffer = tracks.vocals.mode === 'buffer' && tracks.backing.mode === 'buffer';
-  if(bothBuffer){
-    const sV = audioCtx.createBufferSource(); sV.buffer = tracks.vocals.buffer; sV.connect(gainV);
-    const sB = audioCtx.createBufferSource(); sB.buffer = tracks.backing.buffer; sB.connect(gainB);
-    if(loopCheckbox.checked){ sV.loop = sB.loop = true; }
-    sV.start(now + 0.05); sB.start(now + 0.05);
-    activeSources.vocals = sV; activeSources.backing = sB;
-    isPlaying = true; playBtn.textContent = '停止'; statusEl.textContent = '再生中 (buffer)';
-    return;
+  if(audioCtx.state === 'suspended'){
+    try{ await audioCtx.resume(); log('audioCtx resumed'); }catch(e){ log('resume failed', e); }
   }
 
-  // otherwise use media elements: align by setting currentTime then playing together
-  // ensure media elements exist
+  stopPlayback(); updateControlsFromSliders();
+  const now = audioCtx.currentTime;
+
+  const bothBuffer = tracks.vocals.mode==='buffer' && tracks.backing.mode==='buffer';
+  if(bothBuffer){
+    try{
+      const sV = audioCtx.createBufferSource(); sV.buffer = tracks.vocals.buffer; sV.connect(gainV);
+      const sB = audioCtx.createBufferSource(); sB.buffer = tracks.backing.buffer; sB.connect(gainB);
+      if(loopCheckbox.checked){ sV.loop = sB.loop = true; }
+      sV.start(now + 0.05); sB.start(now + 0.05);
+      activeSources.vocals = sV; activeSources.backing = sB; isPlaying=true; playBtn.textContent='停止'; statusEl.textContent='再生中 (buffer)'; log('started buffer sources');
+      // attach end handlers
+      sV.onended = ()=>{ log('vocals ended'); if(!loopCheckbox.checked) stopPlayback(); };
+      return;
+    }catch(e){ log('buffer start failed, fallback to media', e); }
+  }
+
+  // Fallback: ensure media elements are connected inside user gesture
   for(const role of ['vocals','backing']){
     const t = tracks[role];
-    if(t.mode === 'buffer'){
-      // create temporary media element from buffer for sync (not ideal) — instead create bufferSource and treat as buffer case
-      const s = audioCtx.createBufferSource(); s.buffer = t.buffer; s.connect(role==='vocals'?gainV:gainB);
-      if(loopCheckbox.checked) s.loop = true;
-      s.start(now + 0.05);
-      activeSources[role] = s;
-    }else{
-      // media element
-      t.el.currentTime = 0;
-      // connect media element if not connected
-      if(!t.node){ t.node = audioCtx.createMediaElementSource(t.el); t.node.connect(role==='vocals'?gainV:gainB); }
+    if(t.mode === 'media'){
+      try{
+        if(!t.node){ t.node = audioCtx.createMediaElementSource(t.el); t.node.connect(role==='vocals'?gainV:gainB); }
+      }catch(e){ log('createMediaElementSource failed', role, e); }
+    }else if(t.mode === 'buffer'){
+      // create buffer source for this role
+      try{
+        const s = audioCtx.createBufferSource(); s.buffer = t.buffer; s.connect(role==='vocals'?gainV:gainB); if(loopCheckbox.checked) s.loop = true; s.start(now + 0.05); activeSources[role]=s; log('started temp buffer for', role); }
+      catch(e){ log('buffer fallback start failed', role, e); }
     }
   }
 
-  // start media elements play (promise-based) — try to start together
-  const playPromises = [];
-  if(tracks.vocals.mode === 'media') playPromises.push(tracks.vocals.el.play().catch(e=>console.warn('vocals play failed',e)));
-  if(tracks.backing.mode === 'media') playPromises.push(tracks.backing.el.play().catch(e=>console.warn('backing play failed',e)));
-
-  await Promise.all(playPromises);
-  isPlaying = true; playBtn.textContent = '停止'; statusEl.textContent = '再生中 (media)';
+  // start media elements (if any)
+  const promises = [];
+  if(tracks.vocals.mode==='media') promises.push(tracks.vocals.el.play().catch(e=>log('vocals.play failed', e)));
+  if(tracks.backing.mode==='media') promises.push(tracks.backing.el.play().catch(e=>log('backing.play failed', e)));
+  await Promise.all(promises);
+  isPlaying=true; playBtn.textContent='停止'; statusEl.textContent='再生中 (media)'; log('media playback started');
 }
 
-playBtn.addEventListener('click', ()=>{ if(isPlaying) stopPlayback(); else startPlayback(); });
+play.addEventListener('click', ()=>{ if(isPlaying) stopPlayback(); else startPlayback(); });
 stopBtn.addEventListener('click', ()=> stopPlayback());
-
-// ==== visualizer ====
-let freq = new Uint8Array(256);
-function draw(){
-  ctx.clearRect(0,0,canvas.width,canvas.height);
-  if(analyser){ analyser.getByteFrequencyData(freq); const w = canvas.width/freq.length; ctx.fillStyle='#38bdf8'; for(let i=0;i<freq.length;i++){ const h = freq[i]/255*canvas.height; ctx.fillRect(i*w,canvas.height-h,w*0.8,h); } }
-  requestAnimationFrame(draw);
-}
-
-function resize(){ canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight; }
-window.addEventListener('resize', resize); resize(); draw();
-
-// ==== UI bindings ====
 mixSlider.addEventListener('input', updateControlsFromSliders);
 masterSlider.addEventListener('input', updateControlsFromSliders);
 
-// ==== Helpful: show supported audio tested types ====
-console.log('Supported types:', {wav: !!Audio.prototype.canPlayType && Audio.prototype.canPlayType('audio/wav'), mp3: Audio.prototype.canPlayType('audio/mpeg'), m4a: Audio.prototype.canPlayType('audio/x-m4a')});
+// visualizer
+let freq = new Uint8Array(512);
+function draw(){ ctx.clearRect(0,0,canvas.width,canvas.height); if(analyser){ analyser.getByteFrequencyData(freq); const w = canvas.width/freq.length; ctx.fillStyle='#38bdf8'; for(let i=0;i<freq.length;i++){ const h = freq[i]/255*canvas.height; ctx.fillRect(i*w,canvas.height-h,w*0.8,h); } } requestAnimationFrame(draw); }
+function resize(){ canvas.width=canvas.clientWidth; canvas.height=canvas.clientHeight; }
+window.addEventListener('resize', resize); resize(); draw();
+
+// show supported types
+log('canPlayType:', { wav: Audio.prototype.canPlayType && Audio.prototype.canPlayType('audio/wav'), mp3: Audio.prototype.canPlayType && Audio.prototype.canPlayType('audio/mpeg'), m4a: Audio.prototype.canPlayType && Audio.prototype.canPlayType('audio/x-m4a') });
 
 </script>
 </body>
