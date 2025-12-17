@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Demucs Player (iPad Safari対応)</title>
+
+<!-- CDN -->
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+
+<style>
+  body{background:#0f1115;color:#eaeaf0}
+  main{max-width:760px;margin:auto;padding:16px}
+  canvas{width:100%;height:200px;background:#111;border-radius:14px}
+  .controls{display:flex;gap:12px;flex-wrap:wrap}
+</style>
+</head>
+<body>
+<main>
+  <h2 id="title">Demucs Player</h2>
+
+  <div class="controls">
+    <button id="loadBtn">ZIPを読み込む</button>
+    <button id="playBtn" disabled>再生</button>
+  </div>
+
+  <label>Vocals ←→ Backing
+    <input type="range" id="mix" min="0" max="1" step="0.01" value="0.5">
+  </label>
+
+  <canvas id="viz"></canvas>
+  <small id="status">iPad Safari での利用を想定しています</small>
+</main>
+
+<input type="file" id="zipInput" accept=".zip" hidden>
+
+<script>
+// ================= AudioContext =================
+let audioCtx=null, analyser=null;
+let gV=null, gB=null;
+let srcV=null, srcB=null;
+let buffers={};
+let playing=false;
+
+const loadBtn=document.getElementById('loadBtn');
+const playBtn=document.getElementById('playBtn');
+const mix=document.getElementById('mix');
+const zipInput=document.getElementById('zipInput');
+const statusEl=document.getElementById('status');
+const titleEl=document.getElementById('title');
+
+function initAudio(){
+  if(audioCtx) return;
+  audioCtx=new (window.AudioContext||window.webkitAudioContext)();
+  analyser=audioCtx.createAnalyser();
+  analyser.fftSize=256;
+  gV=audioCtx.createGain();
+  gB=audioCtx.createGain();
+  gV.connect(analyser);
+  gB.connect(analyser);
+  analyser.connect(audioCtx.destination);
+}
+
+function updateMix(){
+  if(!gV) return;
+  const v=Number(mix.value);
+  gV.gain.value=v;
+  gB.gain.value=1-v;
+}
+
+loadBtn.onclick=()=>zipInput.click();
+
+zipInput.onchange=async()=>{
+  const file=zipInput.files[0];
+  zipInput.value='';
+  if(!file) return;
+
+  try{
+    statusEl.textContent='ZIP解析中…';
+    const zip=await JSZip.loadAsync(file);
+    let v=null,b=null;
+
+    zip.forEach((_,e)=>{
+      const n=e.name.toLowerCase();
+      if(n.includes('vocals')&&n.match(/\.(wav|mp3)$/)) v=e;
+      if((n.includes('no_vocals')||n.includes('back')||n.includes('inst'))&&n.match(/\.(wav|mp3)$/)) b=e;
+    });
+
+    if(!v||!b){alert('vocals / backing が見つかりません');return;}
+
+    initAudio();
+    buffers.v=await audioCtx.decodeAudioData(await v.async('arraybuffer'));
+    buffers.b=await audioCtx.decodeAudioData(await b.async('arraybuffer'));
+
+    titleEl.textContent=file.name.replace(/\.zip$/i,'');
+    playBtn.disabled=false;
+    statusEl.textContent='読み込み完了（再生ボタンを押してください）';
+  }catch(e){
+    console.error(e);
+    alert('読み込み失敗');
+  }
+};
+
+function stop(){
+  try{srcV?.stop();srcB?.stop();}catch(e){}
+  playing=false;
+  playBtn.textContent='再生';
+}
+
+function play(){
+  initAudio();
+  audioCtx.resume();
+  stop();
+
+  srcV=audioCtx.createBufferSource();
+  srcB=audioCtx.createBufferSource();
+  srcV.buffer=buffers.v;
+  srcB.buffer=buffers.b;
+  srcV.connect(gV);
+  srcB.connect(gB);
+  updateMix();
+  srcV.start();
+  srcB.start();
+  playing=true;
+  playBtn.textContent='停止';
+}
+
+playBtn.onclick=()=>playing?stop():play();
+mix.oninput=updateMix;
+
+// ================= Visualizer =================
+const canvas=document.getElementById('viz');
+const ctx=canvas.getContext('2d');
+const freq=new Uint8Array(128);
+function resize(){canvas.width=canvas.clientWidth;canvas.height=canvas.clientHeight}
+addEventListener('resize',resize);resize();
+
+function draw(){
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  if(analyser){
+    analyser.getByteFrequencyData(freq);
+    const w=canvas.width/freq.length;
+    for(let i=0;i<freq.length;i++){
+      const h=freq[i]/255*canvas.height;
+      ctx.fillRect(i*w,canvas.height-h,w*0.8,h);
+    }
+  }
+  requestAnimationFrame(draw);
+}
+draw();
+</script>
+</body>
+</html>
