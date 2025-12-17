@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Demucs Player — GitHub Pages (改良版・詳細ログ付き)</title>
+<title>Demucs Player — GitHub Pages (改良版)</title>
 
 <!-- CDN -->
 <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
@@ -31,7 +31,7 @@
 <main>
   <header>
     <h1 style="margin:0;font-size:20px">Demucs Player</h1>
-    <div class="small">GitHub Pages 用 — ログ多めの診断版</div>
+    <div class="small">GitHub Pages 用 — 改良版：__MACOSX と AppleDouble を無視します</div>
   </header>
 
   <section class="panel">
@@ -57,7 +57,7 @@
     </div>
 
     <canvas id="viz"></canvas>
-    <h4 class="small">デバッグログ（表示して開発者に見せてください）</h4>
+    <h4 class="small">デバッグログ</h4>
     <pre id="log"></pre>
   </section>
 
@@ -67,8 +67,9 @@
 </main>
 
 <script>
+// ログユーティリティ
 const logEl = document.getElementById('log');
-function log(...args){ console.log(...args); logEl.textContent += Array.from(args).map(a=>typeof a==='object'?JSON.stringify(a):String(a)).join(' ') + '\n'; logEl.scrollTop = 1e9; }
+function log(...items){ console.log(...items); logEl.textContent += items.map(i=>typeof i==='object'?JSON.stringify(i):String(i)).join(' ') + '\n'; logEl.scrollTop = 1e9; }
 
 const loadZipBtn = document.getElementById('loadZip');
 const loadFilesBtn = document.getElementById('loadFiles');
@@ -100,9 +101,7 @@ function ensureAudioCtx(){
     gainV.connect(masterGain); gainB.connect(masterGain); masterGain.connect(analyser); analyser.connect(audioCtx.destination);
     log('AudioContext created, state=', audioCtx.state);
     updateControlsFromSliders();
-  }catch(e){
-    log('AudioContext creation failed:', e);
-  }
+  }catch(e){ log('AudioContext creation failed:', e); }
 }
 
 function updateControlsFromSliders(){
@@ -112,14 +111,13 @@ function updateControlsFromSliders(){
 }
 
 async function decodeAudio(arrayBuffer){
-  // try decode; if fails return media element fallback
   try{
     ensureAudioCtx();
     const buf = await audioCtx.decodeAudioData(arrayBuffer.slice(0));
     log('decodeAudio OK, length(s):', buf.length, 'sr:', buf.sampleRate);
     return { mode:'buffer', buffer:buf };
   }catch(e){
-    log('decodeAudio failed - will fallback to media element:', e);
+    log('decodeAudio failed - will fallback to media element:', e && e.message ? e.message : e);
     const blob = new Blob([arrayBuffer]);
     const url = URL.createObjectURL(blob);
     const el = new Audio(url);
@@ -128,44 +126,70 @@ async function decodeAudio(arrayBuffer){
   }
 }
 
-async function prepareFromFile(file, role){
-  statusEl.textContent = `"${file.name}" を読み込み中...`;
-  log('prepareFromFile', file.name, role);
-  try{
-    const arrayBuffer = await file.arrayBuffer();
-    const t = await decodeAudio(arrayBuffer);
-    tracks[role] = { fileName: file.name, ...t };
-    filenameEl.textContent = `${tracks.vocals?.fileName || '—'}  /  ${tracks.backing?.fileName || '—'}`;
-    statusEl.textContent = '読み込み完了';
-    playBtn.disabled = false; stopBtn.disabled = false;
-    log('track prepared', role, tracks[role]);
-  }catch(err){ log('prepare error', err); statusEl.textContent='読み込みエラー'; alert('ファイルの読み込みに失敗しました'); }
+function isAppleDouble(name){
+  // __MACOSX フォルダや "._" で始まるファイルはスキップ
+  if(!name) return false;
+  if(name.startsWith('__macosx/')) return true;
+  const parts = name.split('/');
+  const base = parts[parts.length-1];
+  if(base.startsWith('._')) return true;
+  if(base.startsWith('.')) return true;
+  return false;
 }
 
-// ZIP loader
+// ZIP loader (改良：__MACOSX と AppleDouble を無視し、同一ファイルを両方に選ばない)
 loadZipBtn.addEventListener('click', ()=> zipInput.click());
 zipInput.addEventListener('change', async ()=>{
   const file = zipInput.files[0]; zipInput.value = '';
   if(!file) return; statusEl.textContent='ZIP を展開中...'; log('ZIP select', file.name);
   try{
     const zip = await JSZip.loadAsync(file);
-    let vEntry=null,bEntry=null;
-    zip.forEach((path,entry)=>{
-      const n = entry.name.toLowerCase();
-      if(n.includes('vocals') && n.match(/\.(wav|mp3|m4a|aac)$/)) vEntry=entry;
-      if((n.includes('no_vocals')||n.includes('back')||n.includes('inst')) && n.match(/\.(wav|mp3|m4a|aac)$/)) bEntry=entry;
+    const entries = [];
+    zip.forEach((path,entry)=> entries.push(entry));
+
+    // フィルタリング: 音声ファイルかつ AppleDouble でないもの
+    const audioEntries = entries.filter(e=>{
+      const n = e.name.toLowerCase();
+      if(isAppleDouble(n)) return false;
+      return n.match(/\.(wav|mp3|m4a|aac)$/i);
     });
-    if(!vEntry||!bEntry){ statusEl.textContent='対象ファイル不足'; alert('zip内にvocals/backを見つけられません'); return; }
-    log('zip entries', vEntry.name, bEntry.name);
+
+    log('audioEntries count', audioEntries.length, audioEntries.map(e=>e.name));
+
+    // 優先ルールで探す（vocals / backing 別、同一ファイルを避ける）
+    const findBy = (regex, exclude) => audioEntries.find(e => regex.test(e.name) && e !== exclude);
+
+    let vEntry = findBy(/(^|\/)\S*vocals\S*\.(wav|mp3|m4a|aac)$/i, null);
+    let bEntry = findBy(/(^|\/)\S*(no_vocals|no-vocals|no\svocals|back|inst|instrumental)\S*\.(wav|mp3|m4a|aac)$/i, vEntry);
+
+    // fallback: if not found, try looser matches
+    if(!vEntry) vEntry = audioEntries.find(e => /vocals/i.test(e.name) );
+    if(!bEntry) bEntry = audioEntries.find(e => /no_vocals|no-vocals|back|inst|instrumental/i.test(e.name) && e !== vEntry );
+
+    // final fallback: pick two distinct audio files
+    if(!vEntry || !bEntry){
+      const distinct = audioEntries.filter(e=>e !== vEntry);
+      if(!vEntry && audioEntries.length>0) vEntry = audioEntries[0];
+      if(!bEntry && audioEntries.length>1) bEntry = audioEntries.find(e=>e !== vEntry) || distinct[0];
+    }
+
+    if(!vEntry || !bEntry){ statusEl.textContent='対象ファイル不足'; alert('zip内に適切な音声ファイルが見つかりません'); log('vEntry/bEntry not found', vEntry && vEntry.name, bEntry && bEntry.name); return; }
+
+    log('selected entries', vEntry.name, bEntry.name);
+
     const vBuf = await vEntry.async('arraybuffer');
     const bBuf = await bEntry.async('arraybuffer');
-    // decode AFTER user gesture when possible — but here decoding to detect mode is OK
+
+    // decode・フォールバック
     const t1 = await decodeAudio(vBuf);
     const t2 = await decodeAudio(bBuf);
+
     tracks.vocals = { fileName: vEntry.name, ...t1 };
     tracks.backing = { fileName: bEntry.name, ...t2 };
+
     filenameEl.textContent = `${tracks.vocals.fileName} / ${tracks.backing.fileName}`;
     statusEl.textContent = 'ZIP 読み込み完了'; log('tracks set', tracks);
+    playBtn.disabled = false; stopBtn.disabled = false;
   }catch(e){ log('zip error', e); statusEl.textContent='ZIP読み込み失敗'; alert('ZIP 読み込みに失敗しました'); }
 });
 
@@ -175,19 +199,30 @@ filesInput.addEventListener('change', async ()=>{
   const files = Array.from(filesInput.files); filesInput.value='';
   if(files.length < 2){ alert('2 ファイルを選択してください'); return; }
   const vocalsFile = files.find(f=>/vocals/i.test(f.name)) || files[0];
-  const backingFile = files.find(f=>/no_vocals|back|inst/i.test(f.name)) || files[1];
-  await prepareFromFile(vocalsFile, 'vocals');
-  await prepareFromFile(backingFile, 'backing');
+  const backingFile = files.find(f=>/no_vocals|no-vocals|back|inst|instrumental/i.test(f.name)) || files[1];
+  await prepareFromFileLocal(vocalsFile, 'vocals');
+  await prepareFromFileLocal(backingFile, 'backing');
 });
+
+async function prepareFromFileLocal(file, role){
+  statusEl.textContent = `"${file.name}" を読み込み中...`;
+  log('prepareFromFileLocal', file.name, role);
+  try{
+    const arrayBuffer = await file.arrayBuffer();
+    const t = await decodeAudio(arrayBuffer);
+    tracks[role] = { fileName: file.name, ...t };
+    filenameEl.textContent = `${tracks.vocals?.fileName || '—'}  /  ${tracks.backing?.fileName || '—'}`;
+    statusEl.textContent = '読み込み完了';
+    playBtn.disabled = false; stopBtn.disabled = false; log('track prepared', role, tracks[role]);
+  }catch(err){ log('prepare error', err); statusEl.textContent='読み込みエラー'; alert('ファイルの読み込みに失敗しました'); }
+}
 
 // playback
 function stopPlayback(){
-  // stop buffer sources
   for(const r of ['vocals','backing']){
     const s = activeSources[r]; if(s && s.stop) try{ s.stop(); }catch(e){ log('stop src err', e); }
     activeSources[r] = null;
   }
-  // stop media elements
   for(const r of ['vocals','backing']){
     const t = tracks[r]; if(t?.mode==='media' && t.el){ try{ t.el.pause(); t.el.currentTime=0; }catch(e){ log('pause err', e);} }
   }
@@ -197,12 +232,8 @@ function stopPlayback(){
 async function startPlayback(){
   if(!tracks.vocals || !tracks.backing) return alert('ファイルを読み込んでください');
   ensureAudioCtx();
-  if(audioCtx.state === 'suspended'){
-    try{ await audioCtx.resume(); log('audioCtx resumed'); }catch(e){ log('resume failed', e); }
-  }
-
-  stopPlayback(); updateControlsFromSliders();
-  const now = audioCtx.currentTime;
+  if(audioCtx.state === 'suspended'){ try{ await audioCtx.resume(); log('audioCtx resumed'); }catch(e){ log('resume failed', e); } }
+  stopPlayback(); updateControlsFromSliders(); const now = audioCtx.currentTime;
 
   const bothBuffer = tracks.vocals.mode==='buffer' && tracks.backing.mode==='buffer';
   if(bothBuffer){
@@ -212,28 +243,20 @@ async function startPlayback(){
       if(loopCheckbox.checked){ sV.loop = sB.loop = true; }
       sV.start(now + 0.05); sB.start(now + 0.05);
       activeSources.vocals = sV; activeSources.backing = sB; isPlaying=true; playBtn.textContent='停止'; statusEl.textContent='再生中 (buffer)'; log('started buffer sources');
-      // attach end handlers
       sV.onended = ()=>{ log('vocals ended'); if(!loopCheckbox.checked) stopPlayback(); };
       return;
     }catch(e){ log('buffer start failed, fallback to media', e); }
   }
 
-  // Fallback: ensure media elements are connected inside user gesture
   for(const role of ['vocals','backing']){
     const t = tracks[role];
     if(t.mode === 'media'){
-      try{
-        if(!t.node){ t.node = audioCtx.createMediaElementSource(t.el); t.node.connect(role==='vocals'?gainV:gainB); }
-      }catch(e){ log('createMediaElementSource failed', role, e); }
+      try{ if(!t.node){ t.node = audioCtx.createMediaElementSource(t.el); t.node.connect(role==='vocals'?gainV:gainB); } }catch(e){ log('createMediaElementSource failed', role, e); }
     }else if(t.mode === 'buffer'){
-      // create buffer source for this role
-      try{
-        const s = audioCtx.createBufferSource(); s.buffer = t.buffer; s.connect(role==='vocals'?gainV:gainB); if(loopCheckbox.checked) s.loop = true; s.start(now + 0.05); activeSources[role]=s; log('started temp buffer for', role); }
-      catch(e){ log('buffer fallback start failed', role, e); }
+      try{ const s = audioCtx.createBufferSource(); s.buffer = t.buffer; s.connect(role==='vocals'?gainV:gainB); if(loopCheckbox.checked) s.loop = true; s.start(now + 0.05); activeSources[role]=s; log('started temp buffer for', role); }catch(e){ log('buffer fallback start failed', role, e); }
     }
   }
 
-  // start media elements (if any)
   const promises = [];
   if(tracks.vocals.mode==='media') promises.push(tracks.vocals.el.play().catch(e=>log('vocals.play failed', e)));
   if(tracks.backing.mode==='media') promises.push(tracks.backing.el.play().catch(e=>log('backing.play failed', e)));
@@ -243,8 +266,7 @@ async function startPlayback(){
 
 play.addEventListener('click', ()=>{ if(isPlaying) stopPlayback(); else startPlayback(); });
 stopBtn.addEventListener('click', ()=> stopPlayback());
-mixSlider.addEventListener('input', updateControlsFromSliders);
-masterSlider.addEventListener('input', updateControlsFromSliders);
+mixSlider.addEventListener('input', updateControlsFromSliders); masterSlider.addEventListener('input', updateControlsFromSliders);
 
 // visualizer
 let freq = new Uint8Array(512);
@@ -252,8 +274,7 @@ function draw(){ ctx.clearRect(0,0,canvas.width,canvas.height); if(analyser){ an
 function resize(){ canvas.width=canvas.clientWidth; canvas.height=canvas.clientHeight; }
 window.addEventListener('resize', resize); resize(); draw();
 
-// show supported types
-log('canPlayType:', { wav: Audio.prototype.canPlayType && Audio.prototype.canPlayType('audio/wav'), mp3: Audio.prototype.canPlayType && Audio.prototype.canPlayType('audio/mpeg'), m4a: Audio.prototype.canPlayType && Audio.prototype.canPlayType('audio/x-m4a') });
+log('Supported types:', { wav: Audio.prototype.canPlayType && Audio.prototype.canPlayType('audio/wav'), mp3: Audio.prototype.canPlayType && Audio.prototype.canPlayType('audio/mpeg'), m4a: Audio.prototype.canPlayType && Audio.prototype.canPlayType('audio/x-m4a') });
 
 </script>
 </body>
