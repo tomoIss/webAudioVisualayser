@@ -3,19 +3,19 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Demucs Player</title>
+<title>Demucs Player — 修正版</title>
 
 <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
 
 <style>
-  body{background:#0f1115;color:#eaeaf0}
-  main{max-width:900px;margin:auto;padding:16px}
+  body{background:#0f1115;color:#eaeaf0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial;margin:0}
+  main{max-width:900px;margin:18px auto;padding:14px}
   .top{display:grid;grid-template-columns:80px 1fr 80px;gap:16px;align-items:center}
-  .slider-vert{writing-mode:bt-lr;-webkit-appearance:slider-vertical;height:140px}
+  .slider-vert{writing-mode:bt-lr;-webkit-appearance:slider-vertical;height:90px}
   canvas{width:100%;height:260px;background:#0b0d12;border-radius:12px}
   .bottom{margin-top:16px}
-  .log{margin-top:8px;max-height:160px;overflow:auto;font-size:.8rem;opacity:.95;background:#071018;padding:8px;border-radius:8px}
+  .log{margin-top:8px;max-height:160px;overflow:auto;font-size:.85rem;background:#071018;padding:8px;border-radius:8px;color:#9fbfd6}
   .btn{background:linear-gradient(90deg,#38bdf8,#4ade80);color:#012;border:none;padding:8px 10px;border-radius:8px;cursor:pointer;font-weight:700}
   .small{font-size:13px;color:#b8cbe0}
   @media(max-width:760px){ .top{grid-template-columns:1fr;grid-auto-rows:auto} .slider-vert{display:none} }
@@ -23,61 +23,67 @@
 </head>
 <body>
 <main>
-<h2>Demucs Player</h2>
+  <h2 style="margin:0 0 8px 0">Demucs Player</h2>
 
-<div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
-  <label for="zipInput" class="btn">ZIPを読み込む</label>
-  <label for="filesInput" class="btn">2ファイル選択</label>
-  <button id="playBtn" class="btn" disabled>再生</button>
-  <button id="stopBtn" class="btn" disabled>停止</button>
-</div>
+  <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
+    <label id="zipLabel" for="zipInput" class="btn">ZIPを読み込む</label>
+    <label id="filesLabel" for="filesInput" class="btn">2ファイル選択</label>
+    <button id="playBtn" class="btn" disabled>再生</button>
+    <button id="stopBtn" class="btn" disabled>停止</button>
+  </div>
 
-<div class="top">
-  <div style="text-align:center">
-    <div class="small">Vocals</div>
-    <div style="height:140px;display:flex;align-items:center;justify-content:center">
-      <input type="range" min="0" max="1" step="0.01" value="1" id="volV" class="slider-vert">
+  <div class="top">
+    <div style="text-align:center">
+      <div class="small">Vocals</div>
+      <div style="height:90px;display:flex;align-items:center;justify-content:center">
+        <input type="range" min="0" max="1" step="0.01" value="1" id="volV" class="slider-vert">
+      </div>
+    </div>
+
+    <canvas id="viz" aria-hidden="true"></canvas>
+
+    <div style="text-align:center">
+      <div class="small">Backing</div>
+      <div style="height:90px;display:flex;align-items:center;justify-content:center">
+        <input type="range" min="0" max="1" step="0.01" value="1" id="volB" class="slider-vert">
+      </div>
     </div>
   </div>
 
-  <canvas id="viz"></canvas>
-
-  <div style="text-align:center">
-    <div class="small">Backing</div>
-    <div style="height:140px;display:flex;align-items:center;justify-content:center">
-      <input type="range" min="0" max="1" step="0.01" value="1" id="volB" class="slider-vert">
+  <div class="bottom">
+    <input type="range" id="seek" min="0" max="1" step="0.01" value="0" style="width:100%">
+    <div style="display:flex;justify-content:space-between;margin-top:6px">
+      <small id="cur">0:00</small>
+      <small id="total">0:00</small>
     </div>
-  </div>
-</div>
 
-<div class="bottom">
-  <input type="range" id="seek" min="0" max="1" step="0.01" value="0" style="width:100%">
-  <div style="display:flex;justify-content:space-between;margin-top:6px">
-    <small id="cur">0:00</small>
-    <small id="total">0:00</small>
-  </div>
+    <div style="display:flex;align-items:center;gap:8px;margin-top:8px">
+      <div class="small">Master</div>
+      <input type="range" id="master" min="0" max="1" step="0.01" value="1" style="flex:1">
+      <div id="filename" class="small" style="width:220px;text-align:right">未選択</div>
+    </div>
 
-  <div style="display:flex;align-items:center;gap:8px;margin-top:8px">
-    <div class="small">Master</div>
-    <input type="range" id="master" min="0" max="1" step="0.01" value="1" style="flex:1">
-    <div id="filename" class="small" style="width:220px;text-align:right">未選択</div>
-  </div>
-
-  <pre id="log" class="log">UI ready
+    <pre id="log" class="log">ready
 </pre>
-</div>
+  </div>
 </main>
 
 <input type="file" id="zipInput" accept=".zip" hidden>
 <input type="file" id="filesInput" accept="audio/*" multiple hidden>
 
 <script>
+/* --- ユーティリティ --- */
 const logEl = document.getElementById('log');
-function log(...a){ logEl.textContent += a.map(x=>typeof x==='object'?JSON.stringify(x):String(x)).join(' ') + '
-'; logEl.scrollTop = 1e9; }
+function log(...a){
+  try{ logEl.textContent += a.map(x => (typeof x==='object'? JSON.stringify(x) : String(x))).join(' ') + '\\n'; logEl.scrollTop = 1e9; }catch(e){}
+  console.log(...a);
+}
 
+/* --- UI refs --- */
 const zipInput = document.getElementById('zipInput');
 const filesInput = document.getElementById('filesInput');
+const zipLabel = document.getElementById('zipLabel');
+const filesLabel = document.getElementById('filesLabel');
 const playBtn = document.getElementById('playBtn');
 const stopBtn = document.getElementById('stopBtn');
 const seek = document.getElementById('seek');
@@ -88,83 +94,317 @@ const volB = document.getElementById('volB');
 const master = document.getElementById('master');
 const filenameEl = document.getElementById('filename');
 
-let audioCtx=null, analyser=null, masterGain=null, gainV=null, gainB=null;
-let tracks = { vocals:null, backing:null };
+/* --- Audio state --- */
+let audioCtx = null, analyser = null, masterGain = null, gainV = null, gainB = null;
+let tracks = { vocals:null, backing:null }; // objects
 let active = { vocals:null, backing:null };
-let isPlaying=false, pausedOffset=0, lastSeekByUser=false;
+let audioElements = []; // keep <audio> elements to avoid GC
+let isPlaying = false, pausedOffset = 0, lastSeekByUser = false;
 
-function ensureCtx(){ if(audioCtx) return; try{ audioCtx = new (window.AudioContext||window.webkitAudioContext)(); analyser = audioCtx.createAnalyser(); analyser.fftSize = 512; masterGain = audioCtx.createGain(); gainV = audioCtx.createGain(); gainB = audioCtx.createGain(); gainV.connect(masterGain); gainB.connect(masterGain); masterGain.connect(analyser); analyser.connect(audioCtx.destination); gainV.gain.value = Number(volV.value); gainB.gain.value = Number(volB.value); masterGain.gain.value = Number(master.value); log('AudioContext created'); }catch(e){ log('AudioContext create failed', e); } }
+/* --- Audio context & nodes --- */
+function ensureCtx(){
+  if(audioCtx) return;
+  try{
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    analyser = audioCtx.createAnalyser(); analyser.fftSize = 512;
+    masterGain = audioCtx.createGain();
+    gainV = audioCtx.createGain();
+    gainB = audioCtx.createGain();
+    // routing: vocals/backing -> master -> analyser -> destination
+    gainV.connect(masterGain);
+    gainB.connect(masterGain);
+    masterGain.connect(analyser);
+    analyser.connect(audioCtx.destination);
+    // initialize gains
+    gainV.gain.value = Number(volV.value);
+    gainB.gain.value = Number(volB.value);
+    masterGain.gain.value = Number(master.value);
+    log('AudioContext created (state=' + audioCtx.state + ')');
+  }catch(e){
+    log('AudioContext create failed', e && e.message ? e.message : e);
+  }
+}
 
-async function tryDecode(arrayBuffer){ try{ ensureCtx(); const buf = await audioCtx.decodeAudioData(arrayBuffer.slice(0)); return buf; }catch(e){ log('decode failed', e && e.message ? e.message : e); return null; } }
+/* --- decode helper --- */
+async function tryDecode(arrayBuffer){
+  try{
+    ensureCtx();
+    // decodeAudioData returns a Promise on modern browsers; use compatible call
+    const buf = await audioCtx.decodeAudioData(arrayBuffer.slice(0));
+    return buf;
+  }catch(e){
+    log('decode failed', e && e.message ? e.message : e);
+    return null;
+  }
+}
 
-function createMediaFromBlob(blob, name){ const url = URL.createObjectURL(blob); const el = new Audio(url); el.preload='auto'; el.playsInline=true; el.setAttribute('playsinline',''); el.style.display='none'; document.body.appendChild(el); el.addEventListener('loadedmetadata', ()=>{ log('loadedmetadata', name, el.duration); try{ const d = calcDuration(); if(isFinite(d)){ seek.max = d; totalEl.textContent = fmt(d); } }catch(e){} }); el.addEventListener('timeupdate', ()=>{ if(!lastSeekByUser){ const cur = getCurrentTime(); seek.value = cur; curEl.textContent = fmt(cur); } }); return { mode:'media', el, blobUrl:url, fileName:name }; }
+/* --- create <audio> element from blob and keep it --- */
+function createMediaFromBlob(blob, name){
+  const url = URL.createObjectURL(blob);
+  const el = new Audio(url);
+  el.preload = 'auto';
+  el.playsInline = true;
+  el.setAttribute('playsinline','');
+  el.style.display = 'none';
+  document.body.appendChild(el);
+  audioElements.push(el);
+  el.addEventListener('loadedmetadata', ()=>{
+    log('loadedmetadata', name, el.duration);
+    try{
+      const d = calcDuration();
+      if(isFinite(d)){ seek.max = d; totalEl.textContent = fmt(d); }
+    }catch(e){}
+  });
+  el.addEventListener('timeupdate', ()=>{
+    if(!lastSeekByUser){
+      const c = getCurrentTime();
+      seek.value = c;
+      curEl.textContent = fmt(c);
+    }
+  });
+  return { mode:'media', el, blobUrl:url, fileName:name };
+}
 
-function calcDuration(){ if(tracks.vocals?.mode==='buffer' && tracks.backing?.mode==='buffer'){ return Math.min(tracks.vocals.buffer.duration, tracks.backing.buffer.duration); } if(tracks.vocals?.mode==='media' && tracks.backing?.mode==='media' && tracks.vocals.el.duration && tracks.backing.el.duration){ return Math.min(tracks.vocals.el.duration, tracks.backing.el.duration); } if(tracks.vocals?.mode==='buffer' && tracks.backing?.mode==='media' && tracks.backing.el.duration) return Math.min(tracks.vocals.buffer.duration, tracks.backing.el.duration); if(tracks.vocals?.mode==='media' && tracks.backing?.mode==='buffer' && tracks.vocals.el.duration) return Math.min(tracks.vocals.el.duration, tracks.backing.buffer.duration); return Infinity; }
-
+/* --- helpers --- */
+function calcDuration(){
+  if(tracks.vocals?.mode==='buffer' && tracks.backing?.mode==='buffer'){
+    return Math.min(tracks.vocals.buffer.duration, tracks.backing.buffer.duration);
+  }
+  if(tracks.vocals?.mode==='media' && tracks.backing?.mode==='media' && tracks.vocals.el.duration && tracks.backing.el.duration){
+    return Math.min(tracks.vocals.el.duration, tracks.backing.el.duration);
+  }
+  if(tracks.vocals?.mode==='buffer' && tracks.backing?.mode==='media' && tracks.backing.el.duration){
+    return Math.min(tracks.vocals.buffer.duration, tracks.backing.el.duration);
+  }
+  if(tracks.vocals?.mode==='media' && tracks.backing?.mode==='buffer' && tracks.vocals.el.duration){
+    return Math.min(tracks.vocals.el.duration, tracks.backing.buffer.duration);
+  }
+  return Infinity;
+}
 function fmt(sec){ if(!isFinite(sec)) return '0:00'; sec = Math.max(0, Math.floor(sec)); const m = Math.floor(sec/60); const s = sec%60; return `${m}:${s.toString().padStart(2,'0')}`; }
+function getCurrentTime(){
+  try{
+    if(tracks.vocals?.mode==='media' && tracks.backing?.mode==='media' && tracks.vocals.el && tracks.backing.el){
+      return Math.min(tracks.vocals.el.currentTime || 0, tracks.backing.el.currentTime || 0);
+    }
+    if(tracks.vocals?.mode==='media' && tracks.vocals.el) return tracks.vocals.el.currentTime || 0;
+    if(tracks.backing?.mode==='media' && tracks.backing.el) return tracks.backing.el.currentTime || 0;
+    if(tracks.vocals?.mode==='buffer' || tracks.backing?.mode==='buffer'){
+      return getBufferCurrent();
+    }
+    return 0;
+  }catch(e){ return 0; }
+}
 
+/* --- selection fallbacks (some iOS block input.click()) --- */
+zipLabel.addEventListener('click', ()=>{ try{ zipInput.click(); }catch(e){} });
+filesLabel.addEventListener('click', ()=>{ try{ filesInput.click(); }catch(e){} });
+
+/* --- ZIP loader --- */
 zipInput.addEventListener('change', async ()=>{
-  const f = zipInput.files[0]; zipInput.value=''; if(!f) return; log('ZIP select', f.name);
+  const f = zipInput.files[0]; zipInput.value='';
+  if(!f) return;
+  log('ZIP select', f.name);
   try{
     const zip = await JSZip.loadAsync(f);
-    const names = Object.keys(zip.files).filter(n => !n.toLowerCase().startsWith('__macosx/') && (n.toLowerCase().endsWith('.wav') || n.toLowerCase().endsWith('.mp3') || n.toLowerCase().endsWith('.m4a') || n.toLowerCase().endsWith('.aac')));
+    const names = Object.keys(zip.files).filter(n=>!n.toLowerCase().startsWith('__macosx/') && /\.(wav|mp3|m4a|aac)$/i.test(n));
     log('audio entries', names);
     if(names.length < 2){ alert('zipに音声ファイルが2つ以上必要です'); log('not enough audio entries'); return; }
-    let vName = names.find(n => n.toLowerCase().includes('vocals')) || names.find(n => n.toLowerCase().includes('vocal')) || names[0];
-    let bName = names.find(n => (n.toLowerCase().includes('no_vocals') || n.toLowerCase().includes('no-vocals') || n.toLowerCase().includes('no vocals') || n.toLowerCase().includes('back') || n.toLowerCase().includes('inst') || n.toLowerCase().includes('instrumental')) && n !== vName) || names.find(n => n !== vName) || names[1];
+    // pick likely vocals/backing
+    let vName = names.find(n=>/vocals/i.test(n)) || names.find(n=>/vocal/i.test(n)) || names[0];
+    let bName = names.find(n=>/(no_vocals|no-vocals|no vocals|back|inst|instrumental)/i.test(n) && n!==vName) || names.find(n=>n!==vName) || names[1];
     if(!vName || !bName){ alert('適切なトラックを判別できませんでした'); log('selection failed'); return; }
     log('selected entries', vName, bName);
-    const vBlob = await zip.file(vName).async('blob'); const bBlob = await zip.file(bName).async('blob'); const vAb = await vBlob.arrayBuffer(); const bAb = await bBlob.arrayBuffer(); const bufV = await tryDecode(vAb); const bufB = await tryDecode(bAb);
-    if(bufV && bufB){ tracks.vocals = { mode:'buffer', buffer:bufV, fileName:vName }; tracks.backing = { mode:'buffer', buffer:bufB, fileName:bName }; }
-    else { tracks.vocals = createMediaFromBlob(vBlob, vName); tracks.backing = createMediaFromBlob(bBlob, bName); }
+    const vBlob = await zip.file(vName).async('blob');
+    const bBlob = await zip.file(bName).async('blob');
+    const vAb = await vBlob.arrayBuffer(); const bAb = await bBlob.arrayBuffer();
+    const bufV = await tryDecode(vAb); const bufB = await tryDecode(bAb);
+    if(bufV && bufB){
+      tracks.vocals = { mode:'buffer', buffer:bufV, fileName:vName };
+      tracks.backing = { mode:'buffer', buffer:bufB, fileName:bName };
+    }else{
+      tracks.vocals = createMediaFromBlob(vBlob, vName);
+      tracks.backing = createMediaFromBlob(bBlob, bName);
+    }
     filenameEl.textContent = `${tracks.vocals.fileName} / ${tracks.backing.fileName}`;
     const d = calcDuration(); if(isFinite(d)){ seek.max = d; totalEl.textContent = fmt(d); }
-    playBtn.disabled = false; stopBtn.disabled = false; log('tracks set', {vocals:tracks.vocals.fileName, backing:tracks.backing.fileName, modes:[tracks.vocals.mode, tracks.backing.mode]});
-  }catch(e){ log('zip read failed', e); alert('ZIP 読み込みに失敗しました'); }
+    playBtn.disabled = false; stopBtn.disabled = false;
+    log('tracks set', {vocals:tracks.vocals.fileName, backing:tracks.backing.fileName, modes:[tracks.vocals.mode, tracks.backing.mode]});
+  }catch(e){
+    log('zip read failed', e && e.message ? e.message : e);
+    alert('ZIP 読み込みに失敗しました');
+  }
 });
 
+/* --- files input loader --- */
 filesInput.addEventListener('change', async ()=>{
-  const files = Array.from(filesInput.files); filesInput.value=''; if(files.length < 2){ alert('2ファイル選択してください'); return; }
-  const vocalsFile = files.find(f=>f.name.toLowerCase().includes('vocals')) || files[0];
-  const backingFile = files.find(f=>f.name.toLowerCase().includes('no_vocals') || f.name.toLowerCase().includes('no-vocals') || f.name.toLowerCase().includes('back') || f.name.toLowerCase().includes('inst') || f.name.toLowerCase().includes('instrumental')) || files[1];
+  const files = Array.from(filesInput.files); filesInput.value='';
+  if(files.length < 2){ alert('2ファイル選択してください'); return; }
+  const vocalsFile = files.find(f=>/vocals/i.test(f.name)) || files[0];
+  const backingFile = files.find(f=>/(no_vocals|no-vocals|back|inst|instrumental)/i.test(f.name)) || files[1];
   log('files select', vocalsFile.name, backingFile.name);
-  const vAb = await vocalsFile.arrayBuffer(); const bAb = await backingFile.arrayBuffer(); const bufV = await tryDecode(vAb); const bufB = await tryDecode(bAb);
-  if(bufV && bufB){ tracks.vocals = { mode:'buffer', buffer:bufV, fileName:vocalsFile.name }; tracks.backing = { mode:'buffer', buffer:bufB, fileName:backingFile.name }; }
-  else { tracks.vocals = createMediaFromBlob(new Blob([vAb]), vocalsFile.name); tracks.backing = createMediaFromBlob(new Blob([bAb]), backingFile.name); }
+  const vAb = await vocalsFile.arrayBuffer(); const bAb = await backingFile.arrayBuffer();
+  const bufV = await tryDecode(vAb); const bufB = await tryDecode(bAb);
+  if(bufV && bufB){
+    tracks.vocals = { mode:'buffer', buffer:bufV, fileName:vocalsFile.name };
+    tracks.backing = { mode:'buffer', buffer:bufB, fileName:backingFile.name };
+  }else{
+    tracks.vocals = createMediaFromBlob(new Blob([vAb]), vocalsFile.name);
+    tracks.backing = createMediaFromBlob(new Blob([bAb]), backingFile.name);
+  }
   filenameEl.textContent = `${tracks.vocals.fileName} / ${tracks.backing.fileName}`;
   const d = calcDuration(); if(isFinite(d)){ seek.max = d; totalEl.textContent = fmt(d); }
   playBtn.disabled = false; stopBtn.disabled = false; log('tracks set', {vocals:tracks.vocals.fileName, backing:tracks.backing.fileName});
 });
 
-function startBufferPlayback(offsetSec){ const now = audioCtx.currentTime; stopBufferPlayback(); const sV = audioCtx.createBufferSource(); sV.buffer = tracks.vocals.buffer; sV.connect(gainV); const sB = audioCtx.createBufferSource(); sB.buffer = tracks.backing.buffer; sB.connect(gainB); const loop = false; sV.loop = sB.loop = loop; sV.start(now, offsetSec); sB.start(now, offsetSec); active.vocals = { node:sV, offset:offsetSec, startedAt:now }; active.backing = { node:sB, offset:offsetSec, startedAt:now }; sV.onended = ()=>{ if(!loop) stopAll(); }; }
-function stopBufferPlayback(){ for(const k of ['vocals','backing']){ const a = active[k]; if(a && a.node){ try{ a.node.stop(); }catch(e){} } active[k]=null; } }
-function getBufferCurrent(){ const a = active.vocals; if(a && a.startedAt) return a.offset + (audioCtx.currentTime - a.startedAt); return pausedOffset || Number(seek.value) || 0; }
+/* --- Buffer playback --- */
+function startBufferPlayback(offsetSec){
+  const now = audioCtx.currentTime;
+  stopBufferPlayback();
+  const sV = audioCtx.createBufferSource(); sV.buffer = tracks.vocals.buffer; sV.connect(gainV);
+  const sB = audioCtx.createBufferSource(); sB.buffer = tracks.backing.buffer; sB.connect(gainB);
+  const loop = false;
+  sV.loop = sB.loop = loop;
+  sV.start(now, offsetSec);
+  sB.start(now, offsetSec);
+  active.vocals = { node:sV, offset:offsetSec, startedAt:now };
+  active.backing = { node:sB, offset:offsetSec, startedAt:now };
+  sV.onended = ()=>{ if(!loop) stopAll(); };
+}
+function stopBufferPlayback(){
+  ['vocals','backing'].forEach(k=>{
+    const a = active[k];
+    if(a && a.node){
+      try{ a.node.stop(); }catch(e){}
+    }
+    active[k] = null;
+  });
+}
+function getBufferCurrent(){
+  const a = active.vocals;
+  if(a && a.startedAt) return a.offset + (audioCtx.currentTime - a.startedAt);
+  return pausedOffset || Number(seek.value) || 0;
+}
 
-async function startAll(){ if(!tracks.vocals || !tracks.backing) return alert('ファイルを読み込んでください'); ensureCtx(); if(audioCtx.state==='suspended') try{ await audioCtx.resume(); log('audioCtx resumed'); }catch(e){ log('resume failed', e); }
-  gainV.gain.value = Number(volV.value); gainB.gain.value = Number(volB.value); masterGain.gain.value = Number(master.value);
-  if(tracks.vocals.mode==='buffer' && tracks.backing.mode==='buffer'){ const offsetSec = Number(seek.value) || 0; startBufferPlayback(offsetSec); isPlaying=true; playBtn.textContent='停止'; log('started buffer at', offsetSec); return; }
-  for(const role of ['vocals','backing']){ const t = tracks[role]; if(t.mode==='media' && t.el){ try{ if(!t.node){ t.node = audioCtx.createMediaElementSource(t.el); t.node.connect(role==='vocals'?gainV:gainB); log('connected media source', role); } }catch(e){ log('connect media element failed', role, e); } if(t.el.readyState < 3){ await new Promise(resolve=>{ const onCan=()=>{ t.el.removeEventListener('canplay', onCan); resolve(); }; t.el.addEventListener('canplay', onCan); setTimeout(resolve,2000); }); } try{ t.el.currentTime = Number(seek.value) || 0; }catch(e){} } }
-  const p = []; if(tracks.vocals.mode==='media') p.push(tracks.vocals.el.play().catch(e=>{ log('vocals.play fail', e && e.name); return e;})); if(tracks.backing.mode==='media') p.push(tracks.backing.el.play().catch(e=>{ log('backing.play fail', e && e.name); return e;})); const res = await Promise.all(p); log('media play results', res); isPlaying=true; playBtn.textContent='停止'; }
+/* --- Start / Stop --- */
+async function startAll(){
+  if(!tracks.vocals || !tracks.backing) return alert('ファイルを読み込んでください');
+  ensureCtx();
+  if(audioCtx.state === 'suspended'){
+    try{ await audioCtx.resume(); log('audioCtx resumed'); }catch(e){ log('resume failed', e); }
+  }
+  // update gains
+  try{ gainV.gain.value = Number(volV.value); gainB.gain.value = Number(volB.value); masterGain.gain.value = Number(master.value); }catch(e){}
+  // buffer path
+  if(tracks.vocals.mode === 'buffer' && tracks.backing.mode === 'buffer'){
+    const offsetSec = Number(seek.value) || 0;
+    startBufferPlayback(offsetSec);
+    isPlaying = true; playBtn.textContent = '停止'; log('started buffer at', offsetSec);
+    return;
+  }
+  // media path: try to connect to webaudio, but tolerate failures
+  for(const role of ['vocals','backing']){
+    const t = tracks[role];
+    if(t?.mode === 'media' && t.el){
+      try{
+        if(audioCtx && typeof audioCtx.createMediaElementSource === 'function' && !t.node){
+          t.node = audioCtx.createMediaElementSource(t.el);
+          t.node.connect(role==='vocals'?gainV:gainB);
+          log('connected media source', role);
+        }
+      }catch(e){
+        log('createMediaElementSource failed (will fallback to direct play)', role, e && e.message ? e.message : e);
+        // continue without node: playback will still use el.play()
+      }
+      // wait canplay if needed
+      if(t.el.readyState < 3){
+        await new Promise(resolve=>{
+          const onCan = ()=>{ t.el.removeEventListener('canplay', onCan); resolve(); };
+          t.el.addEventListener('canplay', onCan);
+          setTimeout(resolve, 2000);
+        });
+      }
+      try{ t.el.currentTime = Number(seek.value) || 0; }catch(e){}
+    }
+  }
+  // call play on elements (some may not be connected to audio graph, but will play)
+  const promises = [];
+  if(tracks.vocals.mode === 'media' && tracks.vocals.el) promises.push(tracks.vocals.el.play().catch(e=>{ log('vocals.play fail', e && e.name); return e; }));
+  if(tracks.backing.mode === 'media' && tracks.backing.el) promises.push(tracks.backing.el.play().catch(e=>{ log('backing.play fail', e && e.name); return e; }));
+  const res = await Promise.all(promises);
+  log('media play results', res);
+  isPlaying = true; playBtn.textContent = '停止';
+}
 
-function stopAll(){ if(tracks.vocals?.mode==='buffer' || tracks.backing?.mode==='buffer'){ stopBufferPlayback(); pausedOffset = getBufferCurrent(); } for(const role of ['vocals','backing']){ const t = tracks[role]; if(t?.mode==='media' && t.el){ try{ t.el.pause(); }catch(e){ log('pause failed', e); } } } isPlaying=false; playBtn.textContent='再生'; }
+/* --- Stop all --- */
+function stopAll(){
+  if(tracks.vocals?.mode === 'buffer' || tracks.backing?.mode === 'buffer'){
+    stopBufferPlayback();
+    pausedOffset = getBufferCurrent();
+  }
+  ['vocals','backing'].forEach(role=>{
+    const t = tracks[role];
+    if(t?.mode === 'media' && t.el){
+      try{ t.el.pause(); }catch(e){ log('pause failed', e); }
+    }
+  });
+  isPlaying = false; playBtn.textContent = '再生';
+}
 
+/* --- UI wiring --- */
 playBtn.addEventListener('click', ()=>{ if(isPlaying) stopAll(); else startAll(); });
 stopBtn.addEventListener('click', ()=> stopAll());
 
-seek.addEventListener('input', ()=>{ lastSeekByUser=true; const v = Number(seek.value); curEl.textContent = fmt(v); if(isPlaying){ stopAll(); startAll(); } });
-seek.addEventListener('change', ()=>{ lastSeekByUser=false; });
+seek.addEventListener('input', ()=>{
+  lastSeekByUser = true;
+  const v = Number(seek.value);
+  curEl.textContent = fmt(v);
+  if(isPlaying){ stopAll(); startAll(); }
+});
+seek.addEventListener('change', ()=>{ lastSeekByUser = false; });
 
 volV.addEventListener('input', ()=>{ if(gainV) gainV.gain.value = Number(volV.value); });
 volB.addEventListener('input', ()=>{ if(gainB) gainB.gain.value = Number(volB.value); });
 master.addEventListener('input', ()=>{ if(masterGain) masterGain.gain.value = Number(master.value); });
 
-setInterval(()=>{ if(isPlaying){ let cur = 0; if(tracks.vocals?.mode==='buffer' || tracks.backing?.mode==='buffer') cur = getBufferCurrent(); else if(tracks.vocals?.mode==='media' && tracks.vocals.el && tracks.backing?.mode==='media' && tracks.backing.el) cur = Math.min(tracks.vocals.el.currentTime || 0, tracks.backing.el.currentTime || 0); else if(tracks.vocals?.mode==='media' && tracks.vocals.el) cur = tracks.vocals.el.currentTime || 0; else if(tracks.backing?.mode==='media' && tracks.backing.el) cur = tracks.backing.el.currentTime || 0; seek.value = cur; curEl.textContent = fmt(cur); } }, 200);
+setInterval(()=>{
+  if(isPlaying){
+    let cur = 0;
+    if(tracks.vocals?.mode==='buffer' || tracks.backing?.mode==='buffer') cur = getBufferCurrent();
+    else if(tracks.vocals?.mode==='media' && tracks.vocals.el && tracks.backing?.mode==='media' && tracks.backing.el) cur = Math.min(tracks.vocals.el.currentTime || 0, tracks.backing.el.currentTime || 0);
+    else if(tracks.vocals?.mode==='media' && tracks.vocals.el) cur = tracks.vocals.el.currentTime || 0;
+    else if(tracks.backing?.mode==='media' && tracks.backing.el) cur = tracks.backing.el.currentTime || 0;
+    seek.value = cur; curEl.textContent = fmt(cur);
+  }
+}, 200);
 
-const canvas = document.getElementById('viz'); const ctx = canvas.getContext('2d'); function resize(){ canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight; } window.addEventListener('resize', resize); resize(); const freq = new Uint8Array(256);
-function draw(){ ctx.clearRect(0,0,canvas.width,canvas.height); const w = canvas.width / freq.length; const center = canvas.height/2; if(analyser && audioCtx){ analyser.getByteFrequencyData(freq); for(let i=0;i<freq.length;i+=2){ const v = freq[i]/255; const h = v * (canvas.height/2); const x = i * w; ctx.fillStyle = i%4? '#38bdf8':'#7dd3fc'; ctx.fillRect(x, center-h, w*0.9, h); ctx.fillRect(x, center, w*0.9, h); } } else { for(let i=0;i<64;i++){ const x = i*(canvas.width/64); const h = (Math.sin((Date.now()/300)+i)*0.4+0.5)*(canvas.height/3); ctx.fillStyle='#243447'; ctx.fillRect(x, canvas.height/2 - h/2, canvas.width/64*0.85, h); } } requestAnimationFrame(draw); }
-requestAnimationFrame(draw);
+/* --- visualizer --- */
+const canvas = document.getElementById('viz'); const ctx = canvas.getContext('2d');
+function resize(){ canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight; }
+window.addEventListener('resize', resize); resize();
+const freq = new Uint8Array(256);
+(function draw(){
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  const w = canvas.width / freq.length, center = canvas.height/2;
+  if(analyser && audioCtx){
+    analyser.getByteFrequencyData(freq);
+    for(let i=0;i<freq.length;i+=2){
+      const v = freq[i]/255, h = v * (canvas.height/2), x = i * w;
+      ctx.fillStyle = i%4? '#38bdf8':'#7dd3fc';
+      ctx.fillRect(x, center-h, w*0.9, h);
+      ctx.fillRect(x, center, w*0.9, h);
+    }
+  } else {
+    for(let i=0;i<64;i++){
+      const x = i*(canvas.width/64), h = (Math.sin((Date.now()/300)+i)*0.4+0.5)*(canvas.height/3);
+      ctx.fillStyle = '#243447';
+      ctx.fillRect(x, canvas.height/2 - h/2, canvas.width/64*0.85, h);
+    }
+  }
+  requestAnimationFrame(draw);
+})();
 
-log('ready');
+log('ui ready');
 </script>
 </body>
 </html>
