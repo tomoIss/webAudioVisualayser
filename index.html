@@ -14,29 +14,59 @@ body{
   font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto
 }
 main{max-width:900px;margin:18px auto;padding:14px}
-.top{display:grid;grid-template-columns:90px 1fr 90px;gap:16px;align-items:center}
-canvas{width:100%;height:260px;background:#0b0d12;border-radius:12px}
+
+.top{
+  display:grid;
+  grid-template-columns:90px 1fr 90px;
+  gap:16px;
+  align-items:center
+}
+
+canvas{
+  width:100%;
+  height:260px;
+  background:#0b0d12;
+  border-radius:12px
+}
+
 .btn{
   background:linear-gradient(90deg,#38bdf8,#4ade80);
   color:#012;border:none;padding:8px 12px;
   border-radius:8px;font-weight:700;cursor:pointer
 }
+
 .small{font-size:13px;color:#b8cbe0}
+
 .log{
   background:#071018;color:#9fbfd6;
   font-size:.85rem;border-radius:8px;
-  padding:8px;max-height:160px;overflow:auto;white-space:pre-wrap
+  padding:8px;max-height:160px;
+  overflow:auto;white-space:pre-wrap
 }
 
-/* 縦スライダー（長め） */
+/* ===== 縦スライダー ===== */
+.v-slider{
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  height:180px;
+}
+
+.v-label{
+  margin-bottom:8px;
+  font-size:13px;
+  color:#b8cbe0;
+}
+
 .slider-vert{
-  width:150px;height:22px;
+  width:150px;
+  height:22px;
   transform:rotate(-90deg);
 }
 
 @media(max-width:760px){
   .top{grid-template-columns:1fr}
-  .slider-vert{display:none}
+  .v-slider{display:none}
 }
 </style>
 </head>
@@ -47,22 +77,24 @@ canvas{width:100%;height:260px;background:#0b0d12;border-radius:12px}
 
 <div style="display:flex;gap:8px;margin-bottom:10px">
   <label class="btn" for="zipInput">ZIP読込</label>
-  <label class="btn" for="filesInput">2ファイル</label>
+  <label class="btn" for="filesInput">2ファイル（vocals / backing）</label>
   <button class="btn" id="playBtn" disabled>再生</button>
   <button class="btn" id="stopBtn" disabled>停止</button>
 </div>
 
 <div class="top">
-  <div style="text-align:center">
-    <div class="small">Vocals</div>
-    <input id="volV" type="range" min="0" max="1" step="0.01" value="1" class="slider-vert">
+  <div class="v-slider">
+    <div class="v-label">Vocals</div>
+    <input id="volV" type="range" min="0" max="1" step="0.01" value="1"
+           class="slider-vert">
   </div>
 
   <canvas id="viz"></canvas>
 
-  <div style="text-align:center">
-    <div class="small">Backing</div>
-    <input id="volB" type="range" min="0" max="1" step="0.01" value="1" class="slider-vert">
+  <div class="v-slider">
+    <div class="v-label">Backing</div>
+    <input id="volB" type="range" min="0" max="1" step="0.01" value="1"
+           class="slider-vert">
   </div>
 </div>
 
@@ -84,25 +116,24 @@ canvas{width:100%;height:260px;background:#0b0d12;border-radius:12px}
 </main>
 
 <input id="zipInput" type="file" accept=".zip" hidden>
-<input id="filesInput" type="file" accept="audio/*" multiple hidden>
+<input id="filesInput"
+       type="file"
+       multiple
+       hidden
+       accept=".wav,.mp3,.m4a,.aac,.ogg">
 
 <script>
 /* ---------- util ---------- */
-const logEl = document.getElementById('log');
-const log = (...a)=>{ logEl.textContent+=a.join(' ')+'\\n'; logEl.scrollTop=1e9; };
-
-const fmt = s=>{
-  if(!isFinite(s))return'0:00';
-  s=Math.floor(s);return`${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`;
-};
+const logEl=document.getElementById('log');
+const log=(...a)=>{logEl.textContent+=a.join(' ')+'\\n';logEl.scrollTop=1e9};
+const fmt=s=>!isFinite(s)?'0:00':`${Math.floor(s/60)}:${String(Math.floor(s)%60).padStart(2,'0')}`;
 
 /* ---------- audio ---------- */
-let ctx, analyser, masterGain, gainV, gainB;
-let tracks={vocals:null,backing:null};
-let buffers={}, sources={}, paused=0, playing=false;
+let ctx,analyser,masterGain,gainV,gainB;
+let buffers={},sources={},paused=0,playing=false;
 
 function ensureCtx(){
-  if(ctx) return;
+  if(ctx)return;
   ctx=new (AudioContext||webkitAudioContext)();
   analyser=ctx.createAnalyser(); analyser.fftSize=512;
   masterGain=ctx.createGain();
@@ -114,19 +145,13 @@ function ensureCtx(){
 
 async function decode(ab){
   ensureCtx();
-  try{
-    return await new Promise((res,rej)=>ctx.decodeAudioData(ab,res,rej));
-  }catch{return null;}
+  return new Promise((res,rej)=>ctx.decodeAudioData(ab,res,rej));
 }
 
 /* ---------- load ---------- */
 async function setTracks(vBlob,bBlob,vName,bName){
   const vb=await decode(await vBlob.arrayBuffer());
   const bb=await decode(await bBlob.arrayBuffer());
-  if(!vb||!bb){ alert('decode失敗'); return; }
-
-  tracks.vocals={mode:'buffer',buf:vb};
-  tracks.backing={mode:'buffer',buf:bb};
   buffers={vocals:vb,backing:bb};
 
   const d=Math.min(vb.duration,bb.duration);
@@ -138,31 +163,27 @@ async function setTracks(vBlob,bBlob,vName,bName){
 
 zipInput.onchange=async()=>{
   const zip=await JSZip.loadAsync(zipInput.files[0]);
-  const names=Object.keys(zip.files).filter(n=>/\.(wav|mp3|m4a)$/i.test(n));
-  if(names.length<2)return alert('音声2つ必要');
-  const v=names.find(n=>/vocals/i.test(n))||names[0];
-  const b=names.find(n=>/inst|back|no_vocals/i.test(n))||names[1];
+  const n=Object.keys(zip.files).filter(n=>/\.(wav|mp3|m4a)$/i.test(n));
+  const v=n.find(x=>/vocals/i.test(x))||n[0];
+  const b=n.find(x=>/inst|back/i.test(x))||n[1];
   await setTracks(await zip.file(v).async('blob'),await zip.file(b).async('blob'),v,b);
 };
 
 filesInput.onchange=async()=>{
   const f=[...filesInput.files];
-  if(f.length<2)return alert('2つ選択');
+  if(f.length<2)return alert('2ファイル必要');
   await setTracks(f[0],f[1],f[0].name,f[1].name);
 };
 
 /* ---------- play ---------- */
 function stop(){
   Object.values(sources).forEach(s=>{try{s.stop()}catch{}});
-  sources={};
-  paused=getTime();
+  sources={}; paused=Number(seek.value)||0;
   playing=false; playBtn.textContent='再生';
 }
 
 function start(){
-  ensureCtx();
-  ctx.resume();
-  stop();
+  ensureCtx(); ctx.resume(); stop();
   const t=Number(seek.value)||0;
   ['vocals','backing'].forEach(k=>{
     const s=ctx.createBufferSource();
@@ -172,11 +193,6 @@ function start(){
     sources[k]=s;
   });
   playing=true; playBtn.textContent='停止';
-}
-
-function getTime(){
-  if(!sources.vocals)return paused;
-  return paused+(ctx.currentTime-(sources.vocals.startTime||0));
 }
 
 /* ---------- UI ---------- */
@@ -189,8 +205,8 @@ seek.oninput=()=>cur.textContent=fmt(seek.value);
 
 setInterval(()=>{
   if(playing){
-    const t=getTime();
-    seek.value=t; cur.textContent=fmt(t);
+    seek.value=Number(seek.value)+0.2;
+    cur.textContent=fmt(seek.value);
   }
 },200);
 
@@ -200,7 +216,7 @@ const c=viz.getContext('2d'),freq=new Uint8Array(256);
   c.clearRect(0,0,viz.width,viz.height);
   if(analyser){
     analyser.getByteFrequencyData(freq);
-    const w=viz.width/freq.length, h=viz.height/2;
+    const w=viz.width/freq.length,h=viz.height/2;
     for(let i=0;i<freq.length;i+=2){
       const v=freq[i]/255*h;
       c.fillStyle='#38bdf8';
