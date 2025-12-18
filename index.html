@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Demucs Player — Viz 修正版</title>
+<title>Demucs Player — Viz レイアウト修正版</title>
 
 <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
@@ -75,7 +75,7 @@ const logEl = document.getElementById('log');
 const log = (...a) => { logEl.textContent += a.join(' ') + '\n'; logEl.scrollTop = 1e9; };
 const fmt = s => !isFinite(s) ? '0:00' : `${Math.floor(s/60)}:${String(Math.floor(s)%60).padStart(2,'0')}`;
 
-/* ---------- audio （既存ロジック維持） ---------- */
+/* ---------- audio （変更なし） ---------- */
 let ctx, analyser, masterGain, gainV, gainB;
 let buffers = {}, sources = {}, startTime = 0, pausedAt = 0, playing = false;
 
@@ -98,7 +98,7 @@ async function decode(ab){
   return new Promise((res, rej)=> ctx.decodeAudioData(ab, res, rej));
 }
 
-/* ---------- load (ZIP arraybuffer 安定パス) ---------- */
+/* ---------- load (ZIP: arraybuffer 経由, 既存安定パス) ---------- */
 async function setTracks(vBlob, bBlob, vName, bName){
   const vb = await decode(await vBlob.arrayBuffer());
   const bb = await decode(await bBlob.arrayBuffer());
@@ -185,7 +185,7 @@ setInterval(()=>{
   }
 },200);
 
-/* ---------- visualizer（拡張・修正版） ---------- */
+/* ---------- visualizer（レイアウト修正版） ---------- */
 const canvas = document.getElementById('viz');
 const ctx2 = canvas.getContext('2d');
 
@@ -193,19 +193,26 @@ function resizeCanvas(){
   const ratio = window.devicePixelRatio || 1;
   canvas.width = Math.floor(canvas.clientWidth * ratio);
   canvas.height = Math.floor(canvas.clientHeight * ratio);
-  ctx2.setTransform(ratio,0,0,ratio,0,0); // scale to CSS pixels
+  // scale drawing operations to CSS pixels
+  ctx2.setTransform(ratio,0,0,ratio,0,0);
 }
 window.addEventListener('resize', resizeCanvas);
 resizeCanvas();
 
-let freqBins = new Uint8Array(256); // reassignable -> let
+let freqBins = new Uint8Array(256);
 let floatFreq = null;
 let timeDomain = null;
 
 function drawViz(){
+  // use CSS pixel sizes for layout (because we've set transform)
   const cw = canvas.clientWidth;
   const ch = canvas.clientHeight;
   ctx2.clearRect(0,0,cw,ch);
+
+  // margins to avoid overlap / cut-off
+  const leftPad = 72;      // wider to fit dB labels
+  const topMargin = 10;
+  const bottomMargin = 38; // leave room for freq labels + legend
 
   if(analyser && ctx){
     const binCount = analyser.frequencyBinCount; // fftSize/2
@@ -232,13 +239,13 @@ function drawViz(){
     ctx2.font = '11px monospace';
     ctx2.textAlign = 'right';
     ctx2.textBaseline = 'middle';
-    const leftPad = 56;
 
-    // faint horizontal grid + labels
+    // faint horizontal grid + labels within top/bottom margin
+    const usableH = ch - topMargin - bottomMargin;
     for(let d = Math.ceil(dBBottom/10)*10; d <= dBTop; d += 10){
-      const y = ((dBTop - d) / dBRange) * (ch - 20) + 10;
+      const y = topMargin + ((dBTop - d) / dBRange) * usableH;
       ctx2.fillStyle = '#142b31';
-      ctx2.fillRect(leftPad - 8, y - 0.5, cw - leftPad - 8, 1);
+      ctx2.fillRect(leftPad - 8, y - 0.5, cw - leftPad - 12, 1);
       ctx2.fillStyle = '#9fbfd6';
       ctx2.fillText(String(d) + ' dB', leftPad - 10, y);
     }
@@ -253,12 +260,12 @@ function drawViz(){
       let v = (fdb - dBBottom) / dBRange;
       v = Math.max(0, Math.min(1, v));
       const x = leftPad + i * barWidth;
-      const h = v * (ch - 40);
+      const h = v * usableH;
       ctx2.fillStyle = (i%2) ? '#38bdf8' : '#7dd3fc';
-      ctx2.fillRect(x, ch - 20 - h, Math.max(1, barWidth*0.9), h);
+      ctx2.fillRect(x, topMargin + (usableH - h), Math.max(1, barWidth*0.9), h);
     }
 
-    // frequency markers
+    // frequency markers (labels placed just below usable area)
     const freqs = [50,100,200,500,1000,2000,5000,10000,20000];
     ctx2.fillStyle = '#cfeff7';
     ctx2.font = '11px monospace';
@@ -269,13 +276,14 @@ function drawViz(){
       const binIndex = Math.round(f / binFreq);
       const x = leftPad + binIndex * barWidth;
       ctx2.strokeStyle = '#244e57';
-      ctx2.beginPath(); ctx2.moveTo(x+0.5, 8); ctx2.lineTo(x+0.5, ch-22); ctx2.stroke();
+      ctx2.beginPath(); ctx2.moveTo(x+0.5, topMargin+2); ctx2.lineTo(x+0.5, topMargin+usableH-2); ctx2.stroke();
       const label = (f >= 1000) ? (f/1000)+'k' : String(f);
       ctx2.fillStyle = '#cfeff7';
-      ctx2.fillText(label, x+0.5, ch - 18);
+      // place label inside bottom margin area to avoid cut-off
+      ctx2.fillText(label, x+0.5, topMargin + usableH + 6);
     }
 
-    // RMS value + meter
+    // RMS value + meter (placed in top-left padded area)
     ctx2.fillStyle = '#9fbfd6';
     ctx2.font = '12px monospace';
     ctx2.textAlign = 'left';
@@ -283,8 +291,10 @@ function drawViz(){
     const dbLabel = dbfs.toFixed(1) + ' dBFS';
     ctx2.fillText('Level: ' + dbLabel, leftPad + 6, 6);
 
-    const meterW = 140, meterH = 8;
-    const meterX = leftPad + 6, meterY = 26;
+    const meterW = Math.min(usableWidth * 0.4, 180);
+    const meterH = 8;
+    const meterX = leftPad + 6;
+    const meterY = 28;
     const meterNorm = Math.max(0, Math.min(1, (dbfs - dBBottom) / dBRange));
     ctx2.fillStyle = '#0e2a2f';
     ctx2.fillRect(meterX, meterY, meterW, meterH);
@@ -293,13 +303,15 @@ function drawViz(){
     ctx2.strokeStyle = '#072f36';
     ctx2.strokeRect(meterX, meterY, meterW, meterH);
 
-    // legend
+    // legend bottom-left inside reserved margin
     ctx2.fillStyle = '#9fbfd6';
     ctx2.font = '11px monospace';
-    ctx2.fillText('Freq (Hz) / Level (dB)', leftPad + 6, ch - 4);
+    ctx2.textAlign = 'left';
+    ctx2.textBaseline = 'bottom';
+    ctx2.fillText('Freq (Hz) / Level (dB)', leftPad + 6, ch - 6);
 
   } else {
-    // idle animation
+    // idle animation (centered)
     ctx2.fillStyle = '#243447';
     for(let i=0;i<64;i++){
       const x = i*(canvas.clientWidth/64), h = (Math.sin((Date.now()/300)+i)*0.4+0.5)*(canvas.clientHeight/3);
