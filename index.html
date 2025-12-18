@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Demucs Player — GitHub Pages (改良版)</title>
+<title>Demucs Player — GitHub Pages (改良：個別ゲイン)</title>
 
 <!-- CDN -->
 <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
@@ -22,7 +22,7 @@
   input[type=file]{display:none}
   .btn{background:linear-gradient(90deg,var(--accent),#4ade80);color:#012;border:none;padding:10px 14px;border-radius:10px;font-weight:600}
   .btn:disabled{opacity:.5}
-  label{display:block}
+  label{display:block;margin-top:8px}
   .row{display:flex;gap:8px;align-items:center}
   pre{white-space:pre-wrap;word-break:break-word;background:#071018;padding:8px;border-radius:8px;color:#9fbfd6}
 </style>
@@ -31,7 +31,7 @@
 <main>
   <header>
     <h1 style="margin:0;font-size:20px">Demucs Player</h1>
-    <div class="small">GitHub Pages 用 — 改良版：__MACOSX と AppleDouble を無視します</div>
+    <div class="small">個別ゲイン対応版 — GitHub Pages 向け</div>
   </header>
 
   <section class="panel">
@@ -43,8 +43,12 @@
       <label class="row">Loop<input id="loop" type="checkbox"></label>
     </div>
 
-    <label>Vocals ←→ Backing
-      <input id="mix" type="range" min="0" max="1" step="0.01" value="0.5">
+    <label>Vocals ゲイン
+      <input id="vocalsGain" type="range" min="0" max="2" step="0.01" value="1">
+    </label>
+
+    <label>Backing ゲイン
+      <input id="backingGain" type="range" min="0" max="2" step="0.01" value="1">
     </label>
 
     <label>Master
@@ -71,11 +75,13 @@
 const logEl = document.getElementById('log');
 function log(...items){ console.log(...items); logEl.textContent += items.map(i=>typeof i==='object'?JSON.stringify(i):String(i)).join(' ') + '\n'; logEl.scrollTop = 1e9; }
 
+// UI refs
 const loadZipBtn = document.getElementById('loadZip');
 const loadFilesBtn = document.getElementById('loadFiles');
 const playBtn = document.getElementById('play');
 const stopBtn = document.getElementById('stop');
-const mixSlider = document.getElementById('mix');
+const vocalsGainSlider = document.getElementById('vocalsGain');
+const backingGainSlider = document.getElementById('backingGain');
 const masterSlider = document.getElementById('master');
 const loopCheckbox = document.getElementById('loop');
 const filenameEl = document.getElementById('filename');
@@ -85,6 +91,7 @@ const filesInput = document.getElementById('filesInput');
 const canvas = document.getElementById('viz');
 const ctx = canvas.getContext('2d');
 
+// Audio state
 let audioCtx = null;
 let analyser = null;
 let masterGain = null, gainV = null, gainB = null;
@@ -105,16 +112,22 @@ function ensureAudioCtx(){
 }
 
 function updateControlsFromSliders(){
-  const v = Number(mixSlider.value); const m = Number(masterSlider.value);
-  if(gainV && gainB){ gainV.gain.value = v; gainB.gain.value = 1 - v; }
+  const v = Number(vocalsGainSlider.value);
+  const b = Number(backingGainSlider.value);
+  const m = Number(masterSlider.value);
+  if(gainV && gainB){ gainV.gain.value = v; gainB.gain.value = b; }
   if(masterGain) masterGain.gain.value = m;
+  // If using media elements, set their .volume (0..1). Multiply by master scale.
+  const masterScale = Math.max(0, Math.min(1, m));
+  if(tracks.vocals?.mode === 'media' && tracks.vocals.el) tracks.vocals.el.volume = Math.max(0, Math.min(1, v * masterScale));
+  if(tracks.backing?.mode === 'media' && tracks.backing.el) tracks.backing.el.volume = Math.max(0, Math.min(1, b * masterScale));
 }
 
 async function decodeAudio(arrayBuffer){
   try{
     ensureAudioCtx();
     const buf = await audioCtx.decodeAudioData(arrayBuffer.slice(0));
-    log('decodeAudio OK, length(s):', buf.length, 'sr:', buf.sampleRate);
+    log('decodeAudio OK, length:', buf.length, 'sr:', buf.sampleRate);
     return { mode:'buffer', buffer:buf };
   }catch(e){
     log('decodeAudio failed - will fallback to media element:', e && e.message ? e.message : e);
@@ -127,9 +140,9 @@ async function decodeAudio(arrayBuffer){
 }
 
 function isAppleDouble(name){
-  // __MACOSX フォルダや "._" で始まるファイルはスキップ
   if(!name) return false;
-  if(name.startsWith('__macosx/')) return true;
+  const n = name.toLowerCase();
+  if(n.startsWith('__macosx/')) return true;
   const parts = name.split('/');
   const base = parts[parts.length-1];
   if(base.startsWith('._')) return true;
@@ -137,7 +150,7 @@ function isAppleDouble(name){
   return false;
 }
 
-// ZIP loader (改良：__MACOSX と AppleDouble を無視し、同一ファイルを両方に選ばない)
+// ZIP loader
 loadZipBtn.addEventListener('click', ()=> zipInput.click());
 zipInput.addEventListener('change', async ()=>{
   const file = zipInput.files[0]; zipInput.value = '';
@@ -147,26 +160,22 @@ zipInput.addEventListener('change', async ()=>{
     const entries = [];
     zip.forEach((path,entry)=> entries.push(entry));
 
-    // フィルタリング: 音声ファイルかつ AppleDouble でないもの
     const audioEntries = entries.filter(e=>{
-      const n = e.name.toLowerCase();
+      const n = e.name;
       if(isAppleDouble(n)) return false;
       return n.match(/\.(wav|mp3|m4a|aac)$/i);
     });
 
     log('audioEntries count', audioEntries.length, audioEntries.map(e=>e.name));
 
-    // 優先ルールで探す（vocals / backing 別、同一ファイルを避ける）
     const findBy = (regex, exclude) => audioEntries.find(e => regex.test(e.name) && e !== exclude);
 
     let vEntry = findBy(/(^|\/)\S*vocals\S*\.(wav|mp3|m4a|aac)$/i, null);
     let bEntry = findBy(/(^|\/)\S*(no_vocals|no-vocals|no\svocals|back|inst|instrumental)\S*\.(wav|mp3|m4a|aac)$/i, vEntry);
 
-    // fallback: if not found, try looser matches
     if(!vEntry) vEntry = audioEntries.find(e => /vocals/i.test(e.name) );
     if(!bEntry) bEntry = audioEntries.find(e => /no_vocals|no-vocals|back|inst|instrumental/i.test(e.name) && e !== vEntry );
 
-    // final fallback: pick two distinct audio files
     if(!vEntry || !bEntry){
       const distinct = audioEntries.filter(e=>e !== vEntry);
       if(!vEntry && audioEntries.length>0) vEntry = audioEntries[0];
@@ -180,7 +189,6 @@ zipInput.addEventListener('change', async ()=>{
     const vBuf = await vEntry.async('arraybuffer');
     const bBuf = await bEntry.async('arraybuffer');
 
-    // decode・フォールバック
     const t1 = await decodeAudio(vBuf);
     const t2 = await decodeAudio(bBuf);
 
@@ -266,7 +274,7 @@ async function startPlayback(){
 
 play.addEventListener('click', ()=>{ if(isPlaying) stopPlayback(); else startPlayback(); });
 stopBtn.addEventListener('click', ()=> stopPlayback());
-mixSlider.addEventListener('input', updateControlsFromSliders); masterSlider.addEventListener('input', updateControlsFromSliders);
+vocalsGainSlider.addEventListener('input', updateControlsFromSliders); backingGainSlider.addEventListener('input', updateControlsFromSliders); masterSlider.addEventListener('input', updateControlsFromSliders);
 
 // visualizer
 let freq = new Uint8Array(512);
