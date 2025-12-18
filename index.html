@@ -10,7 +10,9 @@
 
 <style>
 body{
-  background:#0f1115;color:#eaeaf0;margin:0;
+  background:#0f1115;
+  color:#eaeaf0;
+  margin:0;
   font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto
 }
 main{max-width:900px;margin:18px auto;padding:14px}
@@ -31,20 +33,28 @@ canvas{
 
 .btn{
   background:linear-gradient(90deg,#38bdf8,#4ade80);
-  color:#012;border:none;padding:8px 12px;
-  border-radius:8px;font-weight:700;cursor:pointer
+  color:#012;
+  border:none;
+  padding:8px 12px;
+  border-radius:8px;
+  font-weight:700;
+  cursor:pointer
 }
 
 .small{font-size:13px;color:#b8cbe0}
 
 .log{
-  background:#071018;color:#9fbfd6;
-  font-size:.85rem;border-radius:8px;
-  padding:8px;max-height:160px;
-  overflow:auto;white-space:pre-wrap
+  background:#071018;
+  color:#9fbfd6;
+  font-size:.85rem;
+  border-radius:8px;
+  padding:8px;
+  max-height:160px;
+  overflow:auto;
+  white-space:pre-wrap
 }
 
-/* ===== 縦スライダー ===== */
+/* ===== 縦スライダー（被り修正済み） ===== */
 .v-slider{
   display:flex;
   flex-direction:column;
@@ -53,16 +63,18 @@ canvas{
 }
 
 .v-label{
-  margin-bottom:8px;
   font-size:13px;
   color:#b8cbe0;
+  margin-bottom:12px; /* 文字と確実に離す */
 }
 
 .slider-vert{
   width:150px;
   height:22px;
   transform:rotate(-90deg);
+  margin-top:28px;   /* ← 被り防止の本体 */
 }
+/* ====================================== */
 
 @media(max-width:760px){
   .top{grid-template-columns:1fr}
@@ -85,7 +97,8 @@ canvas{
 <div class="top">
   <div class="v-slider">
     <div class="v-label">Vocals</div>
-    <input id="volV" type="range" min="0" max="1" step="0.01" value="1"
+    <input id="volV" type="range"
+           min="0" max="1" step="0.01" value="1"
            class="slider-vert">
   </div>
 
@@ -93,7 +106,8 @@ canvas{
 
   <div class="v-slider">
     <div class="v-label">Backing</div>
-    <input id="volB" type="range" min="0" max="1" step="0.01" value="1"
+    <input id="volB" type="range"
+           min="0" max="1" step="0.01" value="1"
            class="slider-vert">
   </div>
 </div>
@@ -107,7 +121,9 @@ canvas{
 
   <div style="display:flex;align-items:center;gap:8px;margin-top:8px">
     <span class="small">Master</span>
-    <input id="master" type="range" min="0" max="1" step="0.01" value="1" style="flex:1">
+    <input id="master" type="range"
+           min="0" max="1" step="0.01" value="1"
+           style="flex:1">
     <span id="filename" class="small">未選択</span>
   </div>
 
@@ -123,14 +139,14 @@ canvas{
        accept=".wav,.mp3,.m4a,.aac,.ogg">
 
 <script>
-/* ---------- util ---------- */
+/* util */
 const logEl=document.getElementById('log');
 const log=(...a)=>{logEl.textContent+=a.join(' ')+'\\n';logEl.scrollTop=1e9};
 const fmt=s=>!isFinite(s)?'0:00':`${Math.floor(s/60)}:${String(Math.floor(s)%60).padStart(2,'0')}`;
 
-/* ---------- audio ---------- */
+/* audio */
 let ctx,analyser,masterGain,gainV,gainB;
-let buffers={},sources={},paused=0,playing=false;
+let buffers={},sources={},startTime=0,pausedAt=0,playing=false;
 
 function ensureCtx(){
   if(ctx)return;
@@ -148,14 +164,15 @@ async function decode(ab){
   return new Promise((res,rej)=>ctx.decodeAudioData(ab,res,rej));
 }
 
-/* ---------- load ---------- */
+/* load */
 async function setTracks(vBlob,bBlob,vName,bName){
   const vb=await decode(await vBlob.arrayBuffer());
   const bb=await decode(await bBlob.arrayBuffer());
   buffers={vocals:vb,backing:bb};
 
   const d=Math.min(vb.duration,bb.duration);
-  seek.max=d; total.textContent=fmt(d);
+  seek.max=d;
+  total.textContent=fmt(d);
   filename.textContent=vName+' / '+bName;
   playBtn.disabled=stopBtn.disabled=false;
   log('tracks loaded');
@@ -163,10 +180,11 @@ async function setTracks(vBlob,bBlob,vName,bName){
 
 zipInput.onchange=async()=>{
   const zip=await JSZip.loadAsync(zipInput.files[0]);
-  const n=Object.keys(zip.files).filter(n=>/\.(wav|mp3|m4a)$/i.test(n));
+  const n=Object.keys(zip.files).filter(n=>/\.(wav|mp3|m4a|aac|ogg)$/i.test(n));
   const v=n.find(x=>/vocals/i.test(x))||n[0];
   const b=n.find(x=>/inst|back/i.test(x))||n[1];
-  await setTracks(await zip.file(v).async('blob'),await zip.file(b).async('blob'),v,b);
+  await setTracks(await zip.file(v).async('blob'),
+                  await zip.file(b).async('blob'),v,b);
 };
 
 filesInput.onchange=async()=>{
@@ -175,42 +193,61 @@ filesInput.onchange=async()=>{
   await setTracks(f[0],f[1],f[0].name,f[1].name);
 };
 
-/* ---------- play ---------- */
+/* play */
 function stop(){
   Object.values(sources).forEach(s=>{try{s.stop()}catch{}});
-  sources={}; paused=Number(seek.value)||0;
-  playing=false; playBtn.textContent='再生';
+  sources={};
+  pausedAt = ctx ? ctx.currentTime - startTime : pausedAt;
+  playing=false;
+  playBtn.textContent='再生';
 }
 
 function start(){
-  ensureCtx(); ctx.resume(); stop();
-  const t=Number(seek.value)||0;
+  ensureCtx();
+  ctx.resume();
+  stop();
+
+  const offset = Number(seek.value)||0;
+  startTime = ctx.currentTime - offset;
+
   ['vocals','backing'].forEach(k=>{
     const s=ctx.createBufferSource();
     s.buffer=buffers[k];
     s.connect(k==='vocals'?gainV:gainB);
-    s.start(0,t);
+    s.start(0,offset);
     sources[k]=s;
   });
-  playing=true; playBtn.textContent='停止';
+
+  playing=true;
+  playBtn.textContent='停止';
 }
 
-/* ---------- UI ---------- */
+function getTime(){
+  return playing ? ctx.currentTime - startTime : pausedAt;
+}
+
+/* UI */
 playBtn.onclick=()=>playing?stop():start();
 stopBtn.onclick=stop;
+
 volV.oninput=()=>gainV&&(gainV.gain.value=volV.value);
 volB.oninput=()=>gainB&&(gainB.gain.value=volB.value);
 master.oninput=()=>masterGain&&(masterGain.gain.value=master.value);
-seek.oninput=()=>cur.textContent=fmt(seek.value);
+
+seek.oninput=()=>{
+  cur.textContent=fmt(seek.value);
+  if(playing) start();
+};
 
 setInterval(()=>{
   if(playing){
-    seek.value=Number(seek.value)+0.2;
-    cur.textContent=fmt(seek.value);
+    const t=getTime();
+    seek.value=t;
+    cur.textContent=fmt(t);
   }
 },200);
 
-/* ---------- viz ---------- */
+/* viz */
 const c=viz.getContext('2d'),freq=new Uint8Array(256);
 (function draw(){
   c.clearRect(0,0,viz.width,viz.height);
