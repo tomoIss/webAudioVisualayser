@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Demucs Player — GitHub Pages (改良：個別ゲイン)</title>
+<title>Demucs Player — シーク & 持続改善版</title>
 
 <!-- CDN -->
 <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
@@ -16,7 +16,7 @@
   header{display:flex;align-items:center;gap:12px}
   .controls{display:flex;gap:12px;flex-wrap:wrap;margin:12px 0}
   .panel{background:var(--panel);padding:12px;border-radius:12px}
-  canvas{width:100%;height:220px;border-radius:8px;background:#0b0c0e;display:block}
+  canvas{width:100%;height:160px;border-radius:8px;background:#0b0c0e;display:block}
   .meta{display:flex;justify-content:space-between;align-items:center;margin-top:8px}
   .small{font-size:13px;color:#a6b1c6}
   input[type=file]{display:none}
@@ -25,13 +25,15 @@
   label{display:block;margin-top:8px}
   .row{display:flex;gap:8px;align-items:center}
   pre{white-space:pre-wrap;word-break:break-word;background:#071018;padding:8px;border-radius:8px;color:#9fbfd6}
+  .time{font-variant-numeric: tabular-nums;}
+  .seek{width:100%}
 </style>
 </head>
 <body>
 <main>
   <header>
     <h1 style="margin:0;font-size:20px">Demucs Player</h1>
-    <div class="small">個別ゲイン対応版 — GitHub Pages 向け</div>
+    <div class="small">シーク・再生位置・保持対応版</div>
   </header>
 
   <section class="panel">
@@ -60,6 +62,14 @@
       <div class="small" id="status">準備完了</div>
     </div>
 
+    <div style="margin-top:8px">
+      <div style="display:flex;align-items:center;gap:8px">
+        <div class="time" id="current">0:00</div>
+        <input id="seek" class="seek" type="range" min="0" max="1" step="0.001" value="0">
+        <div class="time" id="total">0:00</div>
+      </div>
+    </div>
+
     <canvas id="viz"></canvas>
     <h4 class="small">デバッグログ</h4>
     <pre id="log"></pre>
@@ -71,7 +81,7 @@
 </main>
 
 <script>
-// ログユーティリティ
+// ログ
 const logEl = document.getElementById('log');
 function log(...items){ console.log(...items); logEl.textContent += items.map(i=>typeof i==='object'?JSON.stringify(i):String(i)).join(' ') + '\n'; logEl.scrollTop = 1e9; }
 
@@ -90,197 +100,125 @@ const zipInput = document.getElementById('zipInput');
 const filesInput = document.getElementById('filesInput');
 const canvas = document.getElementById('viz');
 const ctx = canvas.getContext('2d');
+const seek = document.getElementById('seek');
+const currentEl = document.getElementById('current');
+const totalEl = document.getElementById('total');
 
 // Audio state
-let audioCtx = null;
-let analyser = null;
-let masterGain = null, gainV = null, gainB = null;
-let tracks = { vocals: null, backing: null };
+let audioCtx = null; let analyser = null; let masterGain = null, gainV = null, gainB = null;
+let tracks = { vocals: null, backing: null }; // { fileName, mode, buffer?, el, blobUrl, arrayBuffer }
 let activeSources = { vocals: null, backing: null };
 let isPlaying = false;
+let lastSeekSetByUser = false;
 
-function ensureAudioCtx(){
-  if(audioCtx) return;
-  try{
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    analyser = audioCtx.createAnalyser(); analyser.fftSize = 512;
-    masterGain = audioCtx.createGain(); gainV = audioCtx.createGain(); gainB = audioCtx.createGain();
-    gainV.connect(masterGain); gainB.connect(masterGain); masterGain.connect(analyser); analyser.connect(audioCtx.destination);
-    log('AudioContext created, state=', audioCtx.state);
-    updateControlsFromSliders();
-  }catch(e){ log('AudioContext creation failed:', e); }
-}
+function ensureAudioCtx(){ if(audioCtx) return; try{ audioCtx = new (window.AudioContext || window.webkitAudioContext)(); analyser = audioCtx.createAnalyser(); analyser.fftSize = 512; masterGain = audioCtx.createGain(); gainV = audioCtx.createGain(); gainB = audioCtx.createGain(); gainV.connect(masterGain); gainB.connect(masterGain); masterGain.connect(analyser); analyser.connect(audioCtx.destination); log('AudioContext created, state=', audioCtx.state); updateControlsFromSliders(); }catch(e){ log('AudioContext creation failed:', e); } }
 
-function updateControlsFromSliders(){
-  const v = Number(vocalsGainSlider.value);
-  const b = Number(backingGainSlider.value);
-  const m = Number(masterSlider.value);
-  if(gainV && gainB){ gainV.gain.value = v; gainB.gain.value = b; }
-  if(masterGain) masterGain.gain.value = m;
-  // If using media elements, set their .volume (0..1). Multiply by master scale.
-  const masterScale = Math.max(0, Math.min(1, m));
-  if(tracks.vocals?.mode === 'media' && tracks.vocals.el) tracks.vocals.el.volume = Math.max(0, Math.min(1, v * masterScale));
-  if(tracks.backing?.mode === 'media' && tracks.backing.el) tracks.backing.el.volume = Math.max(0, Math.min(1, b * masterScale));
-}
+function updateControlsFromSliders(){ const v = Number(vocalsGainSlider.value); const b = Number(backingGainSlider.value); const m = Number(masterSlider.value); if(gainV && gainB){ gainV.gain.value = v; gainB.gain.value = b; } if(masterGain) masterGain.gain.value = m; const masterScale = Math.max(0, Math.min(1, m)); if(tracks.vocals?.mode === 'media' && tracks.vocals.el) tracks.vocals.el.volume = Math.max(0, Math.min(1, v * masterScale)); if(tracks.backing?.mode === 'media' && tracks.backing.el) tracks.backing.el.volume = Math.max(0, Math.min(1, b * masterScale)); }
 
-async function decodeAudio(arrayBuffer){
-  try{
-    ensureAudioCtx();
-    const buf = await audioCtx.decodeAudioData(arrayBuffer.slice(0));
-    log('decodeAudio OK, length:', buf.length, 'sr:', buf.sampleRate);
-    return { mode:'buffer', buffer:buf };
-  }catch(e){
-    log('decodeAudio failed - will fallback to media element:', e && e.message ? e.message : e);
-    const blob = new Blob([arrayBuffer]);
-    const url = URL.createObjectURL(blob);
-    const el = new Audio(url);
-    el.preload = 'auto';
-    return { mode:'media', el };
-  }
-}
+async function decodeAudio(arrayBuffer){ try{ ensureAudioCtx(); const buf = await audioCtx.decodeAudioData(arrayBuffer.slice(0)); log('decodeAudio OK, length:', buf.length, 'sr:', buf.sampleRate); const blob = new Blob([arrayBuffer]); const url = URL.createObjectURL(blob); const el = new Audio(url); el.preload = 'auto'; return { mode:'buffer', buffer:buf, el, blobUrl:url, arrayBuffer }; }catch(e){ log('decodeAudio failed - will fallback to media element:', e && e.message ? e.message : e); const blob = new Blob([arrayBuffer]); const url = URL.createObjectURL(blob); const el = new Audio(url); el.preload = 'auto'; return { mode:'media', el, blobUrl:url, arrayBuffer }; } }
 
-function isAppleDouble(name){
-  if(!name) return false;
-  const n = name.toLowerCase();
-  if(n.startsWith('__macosx/')) return true;
-  const parts = name.split('/');
-  const base = parts[parts.length-1];
-  if(base.startsWith('._')) return true;
-  if(base.startsWith('.')) return true;
-  return false;
-}
+function isAppleDouble(name){ if(!name) return false; const n = name.toLowerCase(); if(n.startsWith('__macosx/')) return true; const parts = name.split('/'); const base = parts[parts.length-1]; if(base.startsWith('._')) return true; if(base.startsWith('.')) return true; return false; }
 
-// ZIP loader
+// helper: format seconds
+function fmt(sec){ if(!isFinite(sec)) return '0:00'; sec = Math.max(0, Math.floor(sec)); const m = Math.floor(sec/60); const s = sec%60; return `${m}:${s.toString().padStart(2,'0')}`; }
+
+// keep audio elements alive across visibility changes; recreate if needed
+function ensureMediaElement(role){ const t = tracks[role]; if(!t) return null; if(t.el && !t.el.src && t.blobUrl){ t.el.src = t.blobUrl; } if(!t.el && t.blobUrl){ t.el = new Audio(t.blobUrl); t.el.preload='auto'; } return t.el; }
+
+// ZIP loader (improved selection)
 loadZipBtn.addEventListener('click', ()=> zipInput.click());
-zipInput.addEventListener('change', async ()=>{
-  const file = zipInput.files[0]; zipInput.value = '';
-  if(!file) return; statusEl.textContent='ZIP を展開中...'; log('ZIP select', file.name);
-  try{
-    const zip = await JSZip.loadAsync(file);
-    const entries = [];
-    zip.forEach((path,entry)=> entries.push(entry));
-
-    const audioEntries = entries.filter(e=>{
-      const n = e.name;
-      if(isAppleDouble(n)) return false;
-      return n.match(/\.(wav|mp3|m4a|aac)$/i);
+zipInput.addEventListener('change', async ()=>{ const file = zipInput.files[0]; zipInput.value=''; if(!file) return; statusEl.textContent='ZIP を展開中...'; log('ZIP select', file.name); try{ const zip = await JSZip.loadAsync(file); const entries=[]; zip.forEach((p,e)=>entries.push(e)); const audioEntries = entries.filter(e=>{ const n=e.name; if(isAppleDouble(n)) return false; return n.match(/\.(wav|mp3|m4a|aac)$/i); }); log('audioEntries', audioEntries.map(e=>e.name)); const findBy=(regex,exclude)=>audioEntries.find(e=>regex.test(e.name)&&e!==exclude); let vEntry=findBy(/(^|\/)\S*vocals\S*\.(wav|mp3|m4a|aac)$/i,null); let bEntry=findBy(/(^|\/)\S*(no_vocals|no-vocals|no\svocals|back|inst|instrumental)\S*\.(wav|mp3|m4a|aac)$/i,vEntry); if(!vEntry) vEntry = audioEntries.find(e=>/vocals/i.test(e.name)); if(!bEntry) bEntry = audioEntries.find(e=>/no_vocals|no-vocals|back|inst|instrumental/i.test(e.name) && e!==vEntry); if(!vEntry||!bEntry){ const distinct = audioEntries.filter(e=>e!==vEntry); if(!vEntry && audioEntries.length>0) vEntry = audioEntries[0]; if(!bEntry && audioEntries.length>1) bEntry = audioEntries.find(e=>e!==vEntry) || distinct[0]; } if(!vEntry||!bEntry){ statusEl.textContent='対象ファイル不足'; alert('zip内に適切な音声ファイルが見つかりません'); log('vEntry/bEntry not found', vEntry && vEntry.name, bEntry && bEntry.name); return; } log('selected entries', vEntry.name, bEntry.name); const vBuf = await vEntry.async('arraybuffer'); const bBuf = await bEntry.async('arraybuffer'); const t1 = await decodeAudio(vBuf); const t2 = await decodeAudio(bBuf); tracks.vocals = { fileName: vEntry.name, ...t1 }; tracks.backing = { fileName: bEntry.name, ...t2 }; filenameEl.textContent = `${tracks.vocals.fileName} / ${tracks.backing.fileName}`; statusEl.textContent = 'ZIP 読み込み完了'; log('tracks set', tracks); playBtn.disabled=false; stopBtn.disabled=false; // attach metadata listeners to update durations
+  [ ['vocals', tracks.vocals], ['backing', tracks.backing] ].forEach(([role, t])=>{
+    if(t && t.el){ t.el.addEventListener('loadedmetadata', ()=>{
+      try{ const dur = Math.min(tracks.vocals.el.duration || Infinity, tracks.backing.el.duration || Infinity);
+        if(isFinite(dur)){
+          seek.max = dur; totalEl.textContent = fmt(dur);
+        }
+      }catch(e){}
     });
-
-    log('audioEntries count', audioEntries.length, audioEntries.map(e=>e.name));
-
-    const findBy = (regex, exclude) => audioEntries.find(e => regex.test(e.name) && e !== exclude);
-
-    let vEntry = findBy(/(^|\/)\S*vocals\S*\.(wav|mp3|m4a|aac)$/i, null);
-    let bEntry = findBy(/(^|\/)\S*(no_vocals|no-vocals|no\svocals|back|inst|instrumental)\S*\.(wav|mp3|m4a|aac)$/i, vEntry);
-
-    if(!vEntry) vEntry = audioEntries.find(e => /vocals/i.test(e.name) );
-    if(!bEntry) bEntry = audioEntries.find(e => /no_vocals|no-vocals|back|inst|instrumental/i.test(e.name) && e !== vEntry );
-
-    if(!vEntry || !bEntry){
-      const distinct = audioEntries.filter(e=>e !== vEntry);
-      if(!vEntry && audioEntries.length>0) vEntry = audioEntries[0];
-      if(!bEntry && audioEntries.length>1) bEntry = audioEntries.find(e=>e !== vEntry) || distinct[0];
-    }
-
-    if(!vEntry || !bEntry){ statusEl.textContent='対象ファイル不足'; alert('zip内に適切な音声ファイルが見つかりません'); log('vEntry/bEntry not found', vEntry && vEntry.name, bEntry && bEntry.name); return; }
-
-    log('selected entries', vEntry.name, bEntry.name);
-
-    const vBuf = await vEntry.async('arraybuffer');
-    const bBuf = await bEntry.async('arraybuffer');
-
-    const t1 = await decodeAudio(vBuf);
-    const t2 = await decodeAudio(bBuf);
-
-    tracks.vocals = { fileName: vEntry.name, ...t1 };
-    tracks.backing = { fileName: bEntry.name, ...t2 };
-
-    filenameEl.textContent = `${tracks.vocals.fileName} / ${tracks.backing.fileName}`;
-    statusEl.textContent = 'ZIP 読み込み完了'; log('tracks set', tracks);
-    playBtn.disabled = false; stopBtn.disabled = false;
-  }catch(e){ log('zip error', e); statusEl.textContent='ZIP読み込み失敗'; alert('ZIP 読み込みに失敗しました'); }
-});
+    t.el.addEventListener('timeupdate', ()=>{
+      if(!lastSeekSetByUser){ const cur = getCurrentTime(); seek.value = cur; currentEl.textContent = fmt(cur); }
+    });
+  });
+}catch(e){ log('zip error', e); statusEl.textContent='ZIP読み込み失敗'; alert('ZIP 読み込みに失敗しました'); } });
 
 // Files loader
 loadFilesBtn.addEventListener('click', ()=> filesInput.click());
-filesInput.addEventListener('change', async ()=>{
-  const files = Array.from(filesInput.files); filesInput.value='';
-  if(files.length < 2){ alert('2 ファイルを選択してください'); return; }
-  const vocalsFile = files.find(f=>/vocals/i.test(f.name)) || files[0];
-  const backingFile = files.find(f=>/no_vocals|no-vocals|back|inst|instrumental/i.test(f.name)) || files[1];
-  await prepareFromFileLocal(vocalsFile, 'vocals');
-  await prepareFromFileLocal(backingFile, 'backing');
+filesInput.addEventListener('change', async ()=>{ const files = Array.from(filesInput.files); filesInput.value=''; if(files.length<2){ alert('2 ファイルを選択してください'); return; } const vocalsFile = files.find(f=>/vocals/i.test(f.name))||files[0]; const backingFile = files.find(f=>/no_vocals|no-vocals|back|inst|instrumental/i.test(f.name))||files[1]; await prepareFromFileLocal(vocalsFile,'vocals'); await prepareFromFileLocal(backingFile,'backing'); });
+
+async function prepareFromFileLocal(file, role){ statusEl.textContent = `"${file.name}" を読み込み中...`; log('prepareFromFileLocal', file.name, role); try{ const arrayBuffer = await file.arrayBuffer(); const t = await decodeAudio(arrayBuffer); tracks[role] = { fileName: file.name, ...t }; filenameEl.textContent = `${tracks.vocals?.fileName || '—'} / ${tracks.backing?.fileName || '—'}`; statusEl.textContent='読み込み完了'; playBtn.disabled=false; stopBtn.disabled=false; log('track prepared', role, tracks[role]); // listener
+    if(tracks[role].el){ tracks[role].el.addEventListener('loadedmetadata', ()=>{
+      try{ const dur = Math.min(tracks.vocals.el.duration || Infinity, tracks.backing.el.duration || Infinity);
+        if(isFinite(dur)){ seek.max = dur; totalEl.textContent = fmt(dur); }
+      }catch(e){}
+    });
+    tracks[role].el.addEventListener('timeupdate', ()=>{ if(!lastSeekSetByUser){ const cur = getCurrentTime(); seek.value = cur; currentEl.textContent = fmt(cur); } }); }
+  }catch(err){ log('prepare error', err); statusEl.textContent='読み込みエラー'; alert('ファイルの読み込みに失敗しました'); } }
+
+// helpers to get current time (use media element times)
+function getCurrentTime(){ try{ if(tracks.vocals?.el && tracks.backing?.el){ return Math.min(tracks.vocals.el.currentTime || 0, tracks.backing.el.currentTime || 0); } if(tracks.vocals?.el) return tracks.vocals.el.currentTime || 0; if(tracks.backing?.el) return tracks.backing.el.currentTime || 0; return 0; }catch(e){ return 0; } }
+
+// seeking
+seek.addEventListener('input', ()=>{ lastSeekSetByUser = true; const t = Number(seek.value); currentEl.textContent = fmt(t); });
+seek.addEventListener('change', ()=>{ const t = Number(seek.value); // set both
+  if(tracks.vocals?.el) try{ tracks.vocals.el.currentTime = t; }catch(e){ log('seek vocals failed', e); }
+  if(tracks.backing?.el) try{ tracks.backing.el.currentTime = t; }catch(e){ log('seek backing failed', e); }
+  lastSeekSetByUser = false; });
+
+// playback using media elements for easy seeking & persistence
+async function startPlayback(){ if(!tracks.vocals || !tracks.backing) return alert('ファイルを読み込んでください'); ensureAudioCtx(); if(audioCtx.state === 'suspended'){ try{ await audioCtx.resume(); log('audioCtx resumed'); }catch(e){ log('resume failed', e); } }
+  stopPlayback(); updateControlsFromSliders(); // ensure media elements exist
+  for(const role of ['vocals','backing']){ const t = tracks[role]; if(!t.el && t.blobUrl){ t.el = new Audio(t.blobUrl); t.el.preload = 'auto'; } if(t.mode==='media' && t.el){ try{ if(!t.node){ t.node = audioCtx.createMediaElementSource(t.el); t.node.connect(role==='vocals'?gainV:gainB); } }catch(e){ log('createMediaElementSource failed', role, e); } } if(t.mode==='buffer' && t.el){ try{ if(!t.node){ t.node = audioCtx.createMediaElementSource(t.el); t.node.connect(role==='vocals'?gainV:gainB); } }catch(e){ log('createMediaElementSource for buffer failed', role, e); } } }
+
+  // sync start: set same currentTime then play together
+  const t0 = Number(seek.value) || 0; if(tracks.vocals.el) tracks.vocals.el.currentTime = t0; if(tracks.backing.el) tracks.backing.el.currentTime = t0;
+  const promises = [];
+  if(tracks.vocals.el) promises.push(tracks.vocals.el.play().catch(e=>log('vocals.play failed', e)));
+  if(tracks.backing.el) promises.push(tracks.backing.el.play().catch(e=>log('backing.play failed', e)));
+  await Promise.all(promises);
+  isPlaying = true; playBtn.textContent='停止'; stopBtn.disabled=false; statusEl.textContent='再生中 (media)'; log('media playback started'); }
+
+function stopPlayback(){ for(const r of ['vocals','backing']){ const s = activeSources[r]; if(s && s.stop) try{ s.stop(); }catch(e){ log('stop src err', e); } activeSources[r]=null; const t = tracks[r]; if(t?.mode==='media' && t.el){ try{ t.el.pause(); /* don't reset currentTime so user can resume */ }catch(e){ log('pause err', e); } } }
+  isPlaying=false; playBtn.textContent='再生'; statusEl.textContent='停止中'; log('stopped'); }
+
+playBtn.addEventListener('click', ()=>{ if(isPlaying) stopPlayback(); else startPlayback(); });
+stopBtn.addEventListener('click', ()=> stopPlayback());
+
+// persist across visibility changes
+document.addEventListener('visibilitychange', ()=>{
+  log('visibility changed', document.visibilityState);
+  if(document.visibilityState === 'hidden'){
+    // pause playback but keep tracks in memory
+    if(isPlaying) stopPlayback();
+  }else{
+    // page visible again — try to recreate media elements if they were GC'd
+    for(const role of ['vocals','backing']){
+      const t = tracks[role]; if(!t) continue; if(!t.el && t.blobUrl){ t.el = new Audio(t.blobUrl); t.el.preload='auto'; }
+      // reattach listeners
+      if(t.el){ t.el.addEventListener('loadedmetadata', ()=>{ try{ const dur = Math.min(tracks.vocals.el.duration || Infinity, tracks.backing.el.duration || Infinity); if(isFinite(dur)){ seek.max = dur; totalEl.textContent = fmt(dur); } }catch(e){} });
+        t.el.addEventListener('timeupdate', ()=>{ if(!lastSeekSetByUser){ const cur = getCurrentTime(); seek.value = cur; currentEl.textContent = fmt(cur); } });
+      }
+    }
+    // if previously playing, keep stopped — user must press play again for gesture
+    statusEl.textContent='復帰しました。再生ボタンで続行してください';
+  }
 });
 
-async function prepareFromFileLocal(file, role){
-  statusEl.textContent = `"${file.name}" を読み込み中...`;
-  log('prepareFromFileLocal', file.name, role);
-  try{
-    const arrayBuffer = await file.arrayBuffer();
-    const t = await decodeAudio(arrayBuffer);
-    tracks[role] = { fileName: file.name, ...t };
-    filenameEl.textContent = `${tracks.vocals?.fileName || '—'}  /  ${tracks.backing?.fileName || '—'}`;
-    statusEl.textContent = '読み込み完了';
-    playBtn.disabled = false; stopBtn.disabled = false; log('track prepared', role, tracks[role]);
-  }catch(err){ log('prepare error', err); statusEl.textContent='読み込みエラー'; alert('ファイルの読み込みに失敗しました'); }
-}
-
-// playback
-function stopPlayback(){
-  for(const r of ['vocals','backing']){
-    const s = activeSources[r]; if(s && s.stop) try{ s.stop(); }catch(e){ log('stop src err', e); }
-    activeSources[r] = null;
-  }
-  for(const r of ['vocals','backing']){
-    const t = tracks[r]; if(t?.mode==='media' && t.el){ try{ t.el.pause(); t.el.currentTime=0; }catch(e){ log('pause err', e);} }
-  }
-  isPlaying=false; playBtn.textContent='再生'; statusEl.textContent='停止中'; log('stopped');
-}
-
-async function startPlayback(){
-  if(!tracks.vocals || !tracks.backing) return alert('ファイルを読み込んでください');
-  ensureAudioCtx();
-  if(audioCtx.state === 'suspended'){ try{ await audioCtx.resume(); log('audioCtx resumed'); }catch(e){ log('resume failed', e); } }
-  stopPlayback(); updateControlsFromSliders(); const now = audioCtx.currentTime;
-
-  const bothBuffer = tracks.vocals.mode==='buffer' && tracks.backing.mode==='buffer';
-  if(bothBuffer){
-    try{
-      const sV = audioCtx.createBufferSource(); sV.buffer = tracks.vocals.buffer; sV.connect(gainV);
-      const sB = audioCtx.createBufferSource(); sB.buffer = tracks.backing.buffer; sB.connect(gainB);
-      if(loopCheckbox.checked){ sV.loop = sB.loop = true; }
-      sV.start(now + 0.05); sB.start(now + 0.05);
-      activeSources.vocals = sV; activeSources.backing = sB; isPlaying=true; playBtn.textContent='停止'; statusEl.textContent='再生中 (buffer)'; log('started buffer sources');
-      sV.onended = ()=>{ log('vocals ended'); if(!loopCheckbox.checked) stopPlayback(); };
-      return;
-    }catch(e){ log('buffer start failed, fallback to media', e); }
-  }
-
-  for(const role of ['vocals','backing']){
-    const t = tracks[role];
-    if(t.mode === 'media'){
-      try{ if(!t.node){ t.node = audioCtx.createMediaElementSource(t.el); t.node.connect(role==='vocals'?gainV:gainB); } }catch(e){ log('createMediaElementSource failed', role, e); }
-    }else if(t.mode === 'buffer'){
-      try{ const s = audioCtx.createBufferSource(); s.buffer = t.buffer; s.connect(role==='vocals'?gainV:gainB); if(loopCheckbox.checked) s.loop = true; s.start(now + 0.05); activeSources[role]=s; log('started temp buffer for', role); }catch(e){ log('buffer fallback start failed', role, e); }
-    }
-  }
-
-  const promises = [];
-  if(tracks.vocals.mode==='media') promises.push(tracks.vocals.el.play().catch(e=>log('vocals.play failed', e)));
-  if(tracks.backing.mode==='media') promises.push(tracks.backing.el.play().catch(e=>log('backing.play failed', e)));
-  await Promise.all(promises);
-  isPlaying=true; playBtn.textContent='停止'; statusEl.textContent='再生中 (media)'; log('media playback started');
-}
-
-play.addEventListener('click', ()=>{ if(isPlaying) stopPlayback(); else startPlayback(); });
-stopBtn.addEventListener('click', ()=> stopPlayback());
-vocalsGainSlider.addEventListener('input', updateControlsFromSliders); backingGainSlider.addEventListener('input', updateControlsFromSliders); masterSlider.addEventListener('input', updateControlsFromSliders);
+// seek update while playing
+setInterval(()=>{
+  if(isPlaying && !lastSeekSetByUser){ const cur=getCurrentTime(); seek.value = cur; currentEl.textContent = fmt(cur); }
+}, 200);
 
 // visualizer
 let freq = new Uint8Array(512);
 function draw(){ ctx.clearRect(0,0,canvas.width,canvas.height); if(analyser){ analyser.getByteFrequencyData(freq); const w = canvas.width/freq.length; ctx.fillStyle='#38bdf8'; for(let i=0;i<freq.length;i++){ const h = freq[i]/255*canvas.height; ctx.fillRect(i*w,canvas.height-h,w*0.8,h); } } requestAnimationFrame(draw); }
 function resize(){ canvas.width=canvas.clientWidth; canvas.height=canvas.clientHeight; }
 window.addEventListener('resize', resize); resize(); draw();
+
+// bindings
+vocalsGainSlider.addEventListener('input', updateControlsFromSliders);
+backingGainSlider.addEventListener('input', updateControlsFromSliders);
+masterSlider.addEventListener('input', updateControlsFromSliders);
 
 log('Supported types:', { wav: Audio.prototype.canPlayType && Audio.prototype.canPlayType('audio/wav'), mp3: Audio.prototype.canPlayType && Audio.prototype.canPlayType('audio/mpeg'), m4a: Audio.prototype.canPlayType && Audio.prototype.canPlayType('audio/x-m4a') });
 
