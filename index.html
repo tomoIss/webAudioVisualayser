@@ -3,54 +3,23 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Demucs Player — Viz 増設版</title>
+<title>Demucs Player — Viz 修正版</title>
 
 <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
 
 <style>
-body{
-  background:#0f1115;
-  color:#eaeaf0;
-  margin:0;
-  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto
-}
+body{background:#0f1115;color:#eaeaf0;margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto}
 main{max-width:900px;margin:18px auto;padding:14px}
-
-.top{
-  display:grid;
-  grid-template-columns:90px 1fr 90px;
-  gap:16px;
-  align-items:center
-}
-
-canvas{
-  width:100%;
-  height:300px; /* 少し高さを増やして目盛りを入れる */
-  background:#0b0d12;
-  border-radius:12px;
-  display:block;
-}
-
-.btn{
-  background:linear-gradient(90deg,#38bdf8,#4ade80);
-  color:#012;border:none;padding:8px 12px;border-radius:8px;font-weight:700;cursor:pointer
-}
-
+.top{display:grid;grid-template-columns:90px 1fr 90px;gap:16px;align-items:center}
+canvas{width:100%;height:300px;background:#0b0d12;border-radius:12px;display:block}
+.btn{background:linear-gradient(90deg,#38bdf8,#4ade80);color:#012;border:none;padding:8px 12px;border-radius:8px;font-weight:700;cursor:pointer}
 .small{font-size:13px;color:#b8cbe0}
-
-.log{
-  background:#071018;color:#9fbfd6;font-size:.85rem;border-radius:8px;padding:8px;max-height:160px;overflow:auto;white-space:pre-wrap
-}
-
-/* 縦スライダー */
+.log{background:#071018;color:#9fbfd6;font-size:.85rem;border-radius:8px;padding:8px;max-height:160px;overflow:auto;white-space:pre-wrap}
 .v-slider{display:flex;flex-direction:column;align-items:center;height:180px}
 .v-label{font-size:13px;color:#b8cbe0;margin-bottom:12px}
 .slider-vert{width:150px;height:22px;transform:rotate(-90deg);margin-top:28px}
-
 @media(max-width:760px){ .top{grid-template-columns:1fr} .v-slider{display:none} }
-
-/* viz テキストスタイル */
 .viz-label{font-family:monospace;color:#9fbfd6;font-size:12px}
 </style>
 </head>
@@ -81,7 +50,7 @@ canvas{
 </div>
 
 <div style="margin-top:14px">
-  <input id="seek" type="range" min="0" max="1" step="0.01" value="0">
+  <input id="seek" type="range" min="0" max="1" step="0.01" value="0" style="width:100%">
   <div style="display:flex;justify-content:space-between">
     <small id="cur">0:00</small>
     <small id="total">0:00</small>
@@ -102,23 +71,21 @@ canvas{
 
 <script>
 /* ---------- util ---------- */
-const logEl=document.getElementById('log');
-const log=(...a)=>{ logEl.textContent+=a.join(' ')+'\\n'; logEl.scrollTop=1e9; };
-const fmt=s=>!isFinite(s)?'0:00':`${Math.floor(s/60)}:${String(Math.floor(s)%60).padStart(2,'0')}`;
+const logEl = document.getElementById('log');
+const log = (...a) => { logEl.textContent += a.join(' ') + '\n'; logEl.scrollTop = 1e9; };
+const fmt = s => !isFinite(s) ? '0:00' : `${Math.floor(s/60)}:${String(Math.floor(s)%60).padStart(2,'0')}`;
 
 /* ---------- audio （既存ロジック維持） ---------- */
 let ctx, analyser, masterGain, gainV, gainB;
-let buffers={}, sources={}, startTime=0, pausedAt=0, playing=false;
+let buffers = {}, sources = {}, startTime = 0, pausedAt = 0, playing = false;
 
 function ensureCtx(){
   if(ctx) return;
   ctx = new (AudioContext||webkitAudioContext)();
   analyser = ctx.createAnalyser();
-  analyser.fftSize = 512; // 512 は元の値を維持
-  // 少し視認性のため decibel 範囲を広めに設定（安全）
+  analyser.fftSize = 512;
   analyser.minDecibels = -100;
   analyser.maxDecibels = -20;
-
   masterGain = ctx.createGain();
   gainV = ctx.createGain(); gainB = ctx.createGain();
   gainV.connect(masterGain); gainB.connect(masterGain);
@@ -131,12 +98,11 @@ async function decode(ab){
   return new Promise((res, rej)=> ctx.decodeAudioData(ab, res, rej));
 }
 
-/* ---------- load (zip 修正：arraybuffer 経由) ---------- */
-async function setTracks(vBlob,bBlob,vName,bName){
+/* ---------- load (ZIP arraybuffer 安定パス) ---------- */
+async function setTracks(vBlob, bBlob, vName, bName){
   const vb = await decode(await vBlob.arrayBuffer());
   const bb = await decode(await bBlob.arrayBuffer());
   buffers = { vocals: vb, backing: bb };
-
   const d = Math.min(vb.duration, bb.duration);
   seek.max = d;
   total.textContent = fmt(d);
@@ -148,7 +114,7 @@ async function setTracks(vBlob,bBlob,vName,bName){
 zipInput.onchange = async () => {
   const file = zipInput.files[0];
   zipInput.value = '';
-  if (!file) return;
+  if(!file) return;
   log('ZIP select:', file.name);
   try{
     const zip = await JSZip.loadAsync(file);
@@ -157,7 +123,6 @@ zipInput.onchange = async () => {
     const vName = names.find(n=>/vocals?/i.test(n)) || names[0];
     const bName = names.find(n=>/(inst|back|no[_-]?vocals?)/i.test(n) && n!==vName) || names.find(n=>n!==vName);
     log('ZIP tracks:', vName, bName);
-    // arraybuffer 経由で取り出して Blob にする（Safari 対策）
     const vAB = await zip.file(vName).async('arraybuffer');
     const bAB = await zip.file(bName).async('arraybuffer');
     const vBlob = new Blob([vAB]);
@@ -179,7 +144,7 @@ filesInput.onchange = async () => {
 
 /* ---------- play / stop（既存ロジック維持） ---------- */
 function stop(){
-  Object.values(sources).forEach(s=>{ try{s.stop()}catch{} });
+  Object.values(sources).forEach(s => { try{ s.stop(); }catch{} });
   sources = {};
   pausedAt = ctx ? ctx.currentTime - startTime : pausedAt;
   playing = false;
@@ -190,10 +155,8 @@ function start(){
   ensureCtx();
   ctx.resume();
   stop();
-
   const offset = Number(seek.value) || 0;
   startTime = ctx.currentTime - offset;
-
   ['vocals','backing'].forEach(k=>{
     const s = ctx.createBufferSource();
     s.buffer = buffers[k];
@@ -201,28 +164,19 @@ function start(){
     s.start(0, offset);
     sources[k] = s;
   });
-
   playing = true;
   playBtn.textContent = '停止';
 }
 
-function getTime(){
-  return playing ? ctx.currentTime - startTime : pausedAt;
-}
+function getTime(){ return playing ? ctx.currentTime - startTime : pausedAt; }
 
 /* ---------- UI wiring ---------- */
-playBtn.onclick = ()=> playing ? stop() : start();
+playBtn.onclick = () => playing ? stop() : start();
 stopBtn.onclick = stop;
-
-volV.oninput = ()=> gainV && (gainV.gain.value = volV.value);
-volB.oninput = ()=> gainB && (gainB.gain.value = volB.value);
-master.oninput = ()=> masterGain && (masterGain.gain.value = master.value);
-
-seek.oninput = ()=>{
-  cur.textContent = fmt(seek.value);
-  if(playing) start();
-};
-
+volV.oninput = () => gainV && (gainV.gain.value = volV.value);
+volB.oninput = () => gainB && (gainB.gain.value = volB.value);
+master.oninput = () => masterGain && (masterGain.gain.value = master.value);
+seek.oninput = () => { cur.textContent = fmt(seek.value); if(playing) start(); };
 setInterval(()=>{
   if(playing){
     const t = getTime();
@@ -231,7 +185,7 @@ setInterval(()=>{
   }
 },200);
 
-/* ---------- visualizer（拡張） ---------- */
+/* ---------- visualizer（拡張・修正版） ---------- */
 const canvas = document.getElementById('viz');
 const ctx2 = canvas.getContext('2d');
 
@@ -239,12 +193,12 @@ function resizeCanvas(){
   const ratio = window.devicePixelRatio || 1;
   canvas.width = Math.floor(canvas.clientWidth * ratio);
   canvas.height = Math.floor(canvas.clientHeight * ratio);
-  ctx2.setTransform(ratio,0,0,ratio,0,0);
+  ctx2.setTransform(ratio,0,0,ratio,0,0); // scale to CSS pixels
 }
 window.addEventListener('resize', resizeCanvas);
 resizeCanvas();
 
-const freqBins = new Uint8Array(256); // will be sized by analyser
+let freqBins = new Uint8Array(256); // reassignable -> let
 let floatFreq = null;
 let timeDomain = null;
 
@@ -254,59 +208,57 @@ function drawViz(){
   ctx2.clearRect(0,0,cw,ch);
 
   if(analyser && ctx){
-    const binCount = analyser.frequencyBinCount;
-    if(floatFreq == null || floatFreq.length !== binCount) {
+    const binCount = analyser.frequencyBinCount; // fftSize/2
+    if(floatFreq == null || floatFreq.length !== binCount){
       floatFreq = new Float32Array(binCount);
       freqBins = new Uint8Array(binCount);
       timeDomain = new Float32Array(analyser.fftSize);
     }
 
-    // 周波数スペクトル（dB）
-    analyser.getFloatFrequencyData(floatFreq);
-    analyser.getByteFrequencyData(freqBins);
-    analyser.getFloatTimeDomainData(timeDomain); // for RMS -> dBFS
+    analyser.getFloatFrequencyData(floatFreq); // dB floats
+    analyser.getByteFrequencyData(freqBins);    // 0-255
+    analyser.getFloatTimeDomainData(timeDomain);
 
-    // compute RMS (time domain) -> dBFS
+    // RMS -> dBFS
     let sum = 0;
-    for(let i=0;i<timeDomain.length;i++){ sum += timeDomain[i]*timeDomain[i]; }
+    for(let i=0;i<timeDomain.length;i++) sum += timeDomain[i]*timeDomain[i];
     const rms = Math.sqrt(sum / timeDomain.length) || 0.000001;
-    const dbfs = 20 * Math.log10(rms); // negative number, 0 is max
+    const dbfs = 20 * Math.log10(rms);
 
-    // draw left-side dB scale
-    const dBTop = analyser.maxDecibels;   // e.g. -20
-    const dBBottom = analyser.minDecibels; // e.g. -100
+    // dB scale left
+    const dBTop = analyser.maxDecibels;
+    const dBBottom = analyser.minDecibels;
     const dBRange = dBTop - dBBottom;
-    ctx2.fillStyle = '#9fbfd6';
     ctx2.font = '11px monospace';
     ctx2.textAlign = 'right';
     ctx2.textBaseline = 'middle';
-    const leftPad = 46; // space for dB labels
+    const leftPad = 56;
+
+    // faint horizontal grid + labels
     for(let d = Math.ceil(dBBottom/10)*10; d <= dBTop; d += 10){
-      const y = ((dBTop - d) / dBRange) * (ch - 10) + 5;
-      ctx2.fillStyle = '#2e4b56';
-      ctx2.fillRect(leftPad-8, y-0.5, cw-leftPad, 1); // faint grid
+      const y = ((dBTop - d) / dBRange) * (ch - 20) + 10;
+      ctx2.fillStyle = '#142b31';
+      ctx2.fillRect(leftPad - 8, y - 0.5, cw - leftPad - 8, 1);
       ctx2.fillStyle = '#9fbfd6';
-      ctx2.fillText(String(d)+' dB', leftPad-10, y);
+      ctx2.fillText(String(d) + ' dB', leftPad - 10, y);
     }
 
-    // draw spectral bars (using floatFreq in dB mapped to height)
+    // spectral bars
     const nyquist = ctx.sampleRate / 2;
-    const binFreq = ctx.sampleRate / analyser.fftSize;
-    const usableWidth = cw - leftPad - 10;
-    const barWidth = usableWidth / floatFreq.length;
+    const binFreq = ctx.sampleRate / analyser.fftSize; // freq per FFT bin
+    const usableWidth = cw - leftPad - 12;
+    const barWidth = Math.max(1, usableWidth / floatFreq.length);
     for(let i=0;i<floatFreq.length;i++){
-      const fdb = floatFreq[i]; // already in dB
-      // map dB to 0..1
+      const fdb = floatFreq[i];
       let v = (fdb - dBBottom) / dBRange;
       v = Math.max(0, Math.min(1, v));
       const x = leftPad + i * barWidth;
-      const h = v * (ch - 20);
-      // color gradient by frequency (low->cyan, high->lightblue)
-      ctx2.fillStyle = i%2 ? '#38bdf8' : '#7dd3fc';
-      ctx2.fillRect(x, ch - 10 - h, Math.max(1, barWidth*0.9), h);
+      const h = v * (ch - 40);
+      ctx2.fillStyle = (i%2) ? '#38bdf8' : '#7dd3fc';
+      ctx2.fillRect(x, ch - 20 - h, Math.max(1, barWidth*0.9), h);
     }
 
-    // draw frequency marker lines & labels for standard freqs
+    // frequency markers
     const freqs = [50,100,200,500,1000,2000,5000,10000,20000];
     ctx2.fillStyle = '#cfeff7';
     ctx2.font = '11px monospace';
@@ -316,37 +268,36 @@ function drawViz(){
       if(f > nyquist) continue;
       const binIndex = Math.round(f / binFreq);
       const x = leftPad + binIndex * barWidth;
-      ctx2.strokeStyle = '#2a6b79';
-      ctx2.beginPath(); ctx2.moveTo(x+0.5, 6); ctx2.lineTo(x+0.5, ch-12); ctx2.stroke();
-      ctx2.fillStyle = '#cfeff7';
+      ctx2.strokeStyle = '#244e57';
+      ctx2.beginPath(); ctx2.moveTo(x+0.5, 8); ctx2.lineTo(x+0.5, ch-22); ctx2.stroke();
       const label = (f >= 1000) ? (f/1000)+'k' : String(f);
-      ctx2.fillText(label, x+0.5, ch - 10);
+      ctx2.fillStyle = '#cfeff7';
+      ctx2.fillText(label, x+0.5, ch - 18);
     }
 
-    // draw RMS dB numeric and a small meter at bottom-left
+    // RMS value + meter
     ctx2.fillStyle = '#9fbfd6';
     ctx2.font = '12px monospace';
     ctx2.textAlign = 'left';
-    ctx2.textBaseline = 'bottom';
+    ctx2.textBaseline = 'top';
     const dbLabel = dbfs.toFixed(1) + ' dBFS';
-    ctx2.fillText('Level: ' + dbLabel, leftPad + 6, 18);
+    ctx2.fillText('Level: ' + dbLabel, leftPad + 6, 6);
 
-    // small horizontal meter (normalized)
     const meterW = 140, meterH = 8;
-    const meterX = leftPad + 6, meterY = 34;
-    // Map dbfs range -100 .. 0 to 0..1
+    const meterX = leftPad + 6, meterY = 26;
     const meterNorm = Math.max(0, Math.min(1, (dbfs - dBBottom) / dBRange));
-    ctx2.fillStyle = '#143d46';
+    ctx2.fillStyle = '#0e2a2f';
     ctx2.fillRect(meterX, meterY, meterW, meterH);
     ctx2.fillStyle = '#38bdf8';
     ctx2.fillRect(meterX, meterY, meterW * meterNorm, meterH);
     ctx2.strokeStyle = '#072f36';
     ctx2.strokeRect(meterX, meterY, meterW, meterH);
 
-    // draw legend top-left
+    // legend
     ctx2.fillStyle = '#9fbfd6';
     ctx2.font = '11px monospace';
-    ctx2.fillText('Freq (Hz) / Level (dB)', leftPad + 6, 4);
+    ctx2.fillText('Freq (Hz) / Level (dB)', leftPad + 6, ch - 4);
+
   } else {
     // idle animation
     ctx2.fillStyle = '#243447';
@@ -359,7 +310,6 @@ function drawViz(){
   requestAnimationFrame(drawViz);
 }
 requestAnimationFrame(drawViz);
-
 </script>
 </body>
 </html>
