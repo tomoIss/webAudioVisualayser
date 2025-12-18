@@ -12,13 +12,16 @@
   body{background:#0f1115;color:#eaeaf0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial;margin:0}
   main{max-width:900px;margin:18px auto;padding:14px}
   .top{display:grid;grid-template-columns:80px 1fr 80px;gap:16px;align-items:center}
-  .slider-vert{writing-mode:bt-lr;-webkit-appearance:slider-vertical;height:90px}
-  canvas{width:100%;height:260px;background:#0b0d12;border-radius:12px}
+  /* 縦スライダーは環境差あるので transform を使う */
+  .slider-vert{width:90px; height:20px; transform: rotate(-90deg); -webkit-appearance: none;}
+  canvas{width:100%;height:260px;background:#0b0d12;border-radius:12px;display:block}
   .bottom{margin-top:16px}
-  .log{margin-top:8px;max-height:160px;overflow:auto;font-size:.85rem;background:#071018;padding:8px;border-radius:8px;color:#9fbfd6}
+  .log{margin-top:8px;max-height:160px;overflow:auto;font-size:.85rem;background:#071018;padding:8px;border-radius:8px;color:#9fbfd6;white-space:pre-wrap}
   .btn{background:linear-gradient(90deg,#38bdf8,#4ade80);color:#012;border:none;padding:8px 10px;border-radius:8px;cursor:pointer;font-weight:700}
   .small{font-size:13px;color:#b8cbe0}
   @media(max-width:760px){ .top{grid-template-columns:1fr;grid-auto-rows:auto} .slider-vert{display:none} }
+  /* input range のデフォルト見た目を軽く調整 */
+  input[type="range"]{background:transparent}
 </style>
 </head>
 <body>
@@ -26,8 +29,8 @@
   <h2 style="margin:0 0 8px 0">Demucs Player</h2>
 
   <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
-    <label id="zipLabel" for="zipInput" class="btn">ZIPを読み込む</label>
-    <label id="filesLabel" for="filesInput" class="btn">2ファイル選択</label>
+    <label id="zipLabel" for="zipInput" class="btn" tabindex="0">ZIPを読み込む</label>
+    <label id="filesLabel" for="filesInput" class="btn" tabindex="0">2ファイル選択</label>
     <button id="playBtn" class="btn" disabled>再生</button>
     <button id="stopBtn" class="btn" disabled>停止</button>
   </div>
@@ -36,7 +39,7 @@
     <div style="text-align:center">
       <div class="small">Vocals</div>
       <div style="height:90px;display:flex;align-items:center;justify-content:center">
-        <input type="range" min="0" max="1" step="0.01" value="1" id="volV" class="slider-vert">
+        <input type="range" min="0" max="1" step="0.01" value="1" id="volV" class="slider-vert" aria-label="Vocals volume">
       </div>
     </div>
 
@@ -45,13 +48,13 @@
     <div style="text-align:center">
       <div class="small">Backing</div>
       <div style="height:90px;display:flex;align-items:center;justify-content:center">
-        <input type="range" min="0" max="1" step="0.01" value="1" id="volB" class="slider-vert">
+        <input type="range" min="0" max="1" step="0.01" value="1" id="volB" class="slider-vert" aria-label="Backing volume">
       </div>
     </div>
   </div>
 
   <div class="bottom">
-    <input type="range" id="seek" min="0" max="1" step="0.01" value="0" style="width:100%">
+    <input type="range" id="seek" min="0" max="1" step="0.01" value="0" style="width:100%" aria-label="seek">
     <div style="display:flex;justify-content:space-between;margin-top:6px">
       <small id="cur">0:00</small>
       <small id="total">0:00</small>
@@ -59,8 +62,8 @@
 
     <div style="display:flex;align-items:center;gap:8px;margin-top:8px">
       <div class="small">Master</div>
-      <input type="range" id="master" min="0" max="1" step="0.01" value="1" style="flex:1">
-      <div id="filename" class="small" style="width:220px;text-align:right">未選択</div>
+      <input type="range" id="master" min="0" max="1" step="0.01" value="1" style="flex:1" aria-label="master">
+      <div id="filename" class="small" style="width:220px;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">未選択</div>
     </div>
 
     <pre id="log" class="log">ready
@@ -75,7 +78,10 @@
 /* --- ユーティリティ --- */
 const logEl = document.getElementById('log');
 function log(...a){
-  try{ logEl.textContent += a.map(x => (typeof x==='object'? JSON.stringify(x) : String(x))).join(' ') + '\\n'; logEl.scrollTop = 1e9; }catch(e){}
+  try{
+    logEl.textContent += a.map(x => (typeof x==='object'? JSON.stringify(x) : String(x))).join(' ') + '\\n';
+    logEl.scrollTop = 1e9;
+  }catch(e){}
   console.log(...a);
 }
 
@@ -96,10 +102,11 @@ const filenameEl = document.getElementById('filename');
 
 /* --- Audio state --- */
 let audioCtx = null, analyser = null, masterGain = null, gainV = null, gainB = null;
-let tracks = { vocals:null, backing:null }; // objects
-let active = { vocals:null, backing:null };
+let tracks = { vocals:null, backing:null }; // { mode: 'buffer'|'media', buffer, el, node, fileName }
 let audioElements = []; // keep <audio> elements to avoid GC
-let isPlaying = false, pausedOffset = 0, lastSeekByUser = false;
+let isPlaying = false;
+let pausedOffset = 0; // for buffer playback
+let bufferSources = { vocals: null, backing: null };
 
 /* --- Audio context & nodes --- */
 function ensureCtx(){
@@ -129,8 +136,10 @@ function ensureCtx(){
 async function tryDecode(arrayBuffer){
   try{
     ensureCtx();
-    // decodeAudioData returns a Promise on modern browsers; use compatible call
-    const buf = await audioCtx.decodeAudioData(arrayBuffer.slice(0));
+    // decodeAudioData returns a Promise on modern browsers
+    const buf = await new Promise((resolve, reject)=>{
+      audioCtx.decodeAudioData(arrayBuffer.slice(0), resolve, reject);
+    });
     return buf;
   }catch(e){
     log('decode failed', e && e.message ? e.message : e);
@@ -152,48 +161,62 @@ function createMediaFromBlob(blob, name){
     log('loadedmetadata', name, el.duration);
     try{
       const d = calcDuration();
-      if(isFinite(d)){ seek.max = d; totalEl.textContent = fmt(d); }
+      if(isFinite(d)){ seek.max = String(d); totalEl.textContent = fmt(d); }
     }catch(e){}
   });
   el.addEventListener('timeupdate', ()=>{
-    if(!lastSeekByUser){
-      const c = getCurrentTime();
-      seek.value = c;
-      curEl.textContent = fmt(c);
-    }
+    // timeupdate handled by shared interval; keep minimal here
   });
   return { mode:'media', el, blobUrl:url, fileName:name };
 }
 
 /* --- helpers --- */
 function calcDuration(){
-  if(tracks.vocals?.mode==='buffer' && tracks.backing?.mode==='buffer'){
-    return Math.min(tracks.vocals.buffer.duration, tracks.backing.buffer.duration);
-  }
-  if(tracks.vocals?.mode==='media' && tracks.backing?.mode==='media' && tracks.vocals.el.duration && tracks.backing.el.duration){
-    return Math.min(tracks.vocals.el.duration, tracks.backing.el.duration);
-  }
-  if(tracks.vocals?.mode==='buffer' && tracks.backing?.mode==='media' && tracks.backing.el.duration){
-    return Math.min(tracks.vocals.buffer.duration, tracks.backing.el.duration);
-  }
-  if(tracks.vocals?.mode==='media' && tracks.backing?.mode==='buffer' && tracks.vocals.el.duration){
-    return Math.min(tracks.vocals.el.duration, tracks.backing.buffer.duration);
-  }
-  return Infinity;
+  const a = tracks.vocals, b = tracks.backing;
+  const candidates = [];
+  if(a?.mode === 'buffer') candidates.push(a.buffer.duration);
+  if(b?.mode === 'buffer') candidates.push(b.buffer.duration);
+  if(a?.mode === 'media' && a.el && isFinite(a.el.duration)) candidates.push(a.el.duration);
+  if(b?.mode === 'media' && b.el && isFinite(b.el.duration)) candidates.push(b.el.duration);
+  if(candidates.length === 0) return Infinity;
+  return Math.min(...candidates);
 }
 function fmt(sec){ if(!isFinite(sec)) return '0:00'; sec = Math.max(0, Math.floor(sec)); const m = Math.floor(sec/60); const s = sec%60; return `${m}:${s.toString().padStart(2,'0')}`; }
+
+function getBufferCurrent(){
+  // If bufferSources are playing, compute current time from startedAt & offset
+  try{
+    const sV = bufferSources.vocals, sB = bufferSources.backing;
+    if(sV?.startedAt != null && sB?.startedAt != null){
+      // both started: take min of two playback positions to keep in sync
+      const tV = sV.offset + (audioCtx.currentTime - sV.startedAt);
+      const tB = sB.offset + (audioCtx.currentTime - sB.startedAt);
+      return Math.min(tV, tB);
+    }
+    if(sV?.startedAt != null) return sV.offset + (audioCtx.currentTime - sV.startedAt);
+    if(sB?.startedAt != null) return sB.offset + (audioCtx.currentTime - sB.startedAt);
+    return pausedOffset || 0;
+  }catch(e){
+    return pausedOffset || 0;
+  }
+}
+
 function getCurrentTime(){
   try{
-    if(tracks.vocals?.mode==='media' && tracks.backing?.mode==='media' && tracks.vocals.el && tracks.backing.el){
-      return Math.min(tracks.vocals.el.currentTime || 0, tracks.backing.el.currentTime || 0);
-    }
-    if(tracks.vocals?.mode==='media' && tracks.vocals.el) return tracks.vocals.el.currentTime || 0;
-    if(tracks.backing?.mode==='media' && tracks.backing.el) return tracks.backing.el.currentTime || 0;
-    if(tracks.vocals?.mode==='buffer' || tracks.backing?.mode==='buffer'){
+    // buffer path
+    if(tracks.vocals?.mode === 'buffer' || tracks.backing?.mode === 'buffer'){
       return getBufferCurrent();
     }
+    // both media -> take min to keep sync visually
+    if(tracks.vocals?.mode === 'media' && tracks.backing?.mode === 'media' && tracks.vocals.el && tracks.backing.el){
+      return Math.min(tracks.vocals.el.currentTime || 0, tracks.backing.el.currentTime || 0);
+    }
+    if(tracks.vocals?.mode === 'media' && tracks.vocals.el) return tracks.vocals.el.currentTime || 0;
+    if(tracks.backing?.mode === 'media' && tracks.backing.el) return tracks.backing.el.currentTime || 0;
     return 0;
-  }catch(e){ return 0; }
+  }catch(e){
+    return 0;
+  }
 }
 
 /* --- selection fallbacks (some iOS block input.click()) --- */
@@ -207,7 +230,7 @@ zipInput.addEventListener('change', async ()=>{
   log('ZIP select', f.name);
   try{
     const zip = await JSZip.loadAsync(f);
-    const names = Object.keys(zip.files).filter(n=>!n.toLowerCase().startsWith('__macosx/') && /\.(wav|mp3|m4a|aac)$/i.test(n));
+    const names = Object.keys(zip.files).filter(n=>!n.toLowerCase().startsWith('__macosx/') && /\.(wav|mp3|m4a|aac|ogg)$/i.test(n));
     log('audio entries', names);
     if(names.length < 2){ alert('zipに音声ファイルが2つ以上必要です'); log('not enough audio entries'); return; }
     // pick likely vocals/backing
@@ -227,7 +250,7 @@ zipInput.addEventListener('change', async ()=>{
       tracks.backing = createMediaFromBlob(bBlob, bName);
     }
     filenameEl.textContent = `${tracks.vocals.fileName} / ${tracks.backing.fileName}`;
-    const d = calcDuration(); if(isFinite(d)){ seek.max = d; totalEl.textContent = fmt(d); }
+    const d = calcDuration(); if(isFinite(d)){ seek.max = String(d); totalEl.textContent = fmt(d); }
     playBtn.disabled = false; stopBtn.disabled = false;
     log('tracks set', {vocals:tracks.vocals.fileName, backing:tracks.backing.fileName, modes:[tracks.vocals.mode, tracks.backing.mode]});
   }catch(e){
@@ -253,37 +276,58 @@ filesInput.addEventListener('change', async ()=>{
     tracks.backing = createMediaFromBlob(new Blob([bAb]), backingFile.name);
   }
   filenameEl.textContent = `${tracks.vocals.fileName} / ${tracks.backing.fileName}`;
-  const d = calcDuration(); if(isFinite(d)){ seek.max = d; totalEl.textContent = fmt(d); }
+  const d = calcDuration(); if(isFinite(d)){ seek.max = String(d); totalEl.textContent = fmt(d); }
   playBtn.disabled = false; stopBtn.disabled = false; log('tracks set', {vocals:tracks.vocals.fileName, backing:tracks.backing.fileName});
 });
 
 /* --- Buffer playback --- */
 function startBufferPlayback(offsetSec){
   const now = audioCtx.currentTime;
-  stopBufferPlayback();
+  stopBufferPlayback(); // ensure previous sources stopped
   const sV = audioCtx.createBufferSource(); sV.buffer = tracks.vocals.buffer; sV.connect(gainV);
   const sB = audioCtx.createBufferSource(); sB.buffer = tracks.backing.buffer; sB.connect(gainB);
-  const loop = false;
-  sV.loop = sB.loop = loop;
+  sV.loop = sB.loop = false;
+  // start both at same context time
   sV.start(now, offsetSec);
   sB.start(now, offsetSec);
-  active.vocals = { node:sV, offset:offsetSec, startedAt:now };
-  active.backing = { node:sB, offset:offsetSec, startedAt:now };
-  sV.onended = ()=>{ if(!loop) stopAll(); };
+  bufferSources.vocals = { node: sV, offset: offsetSec, startedAt: now };
+  bufferSources.backing = { node: sB, offset: offsetSec, startedAt: now };
+  sV.onended = ()=>{ stopAll(); };
+  log('buffer playback started at', offsetSec);
 }
 function stopBufferPlayback(){
   ['vocals','backing'].forEach(k=>{
-    const a = active[k];
-    if(a && a.node){
-      try{ a.node.stop(); }catch(e){}
+    const s = bufferSources[k];
+    if(s && s.node){
+      try{ s.node.stop(); }catch(e){}
     }
-    active[k] = null;
+    bufferSources[k] = null;
   });
+  // remember paused offset
+  try{ pausedOffset = getBufferCurrent(); }catch(e){ pausedOffset = 0; }
 }
-function getBufferCurrent(){
-  const a = active.vocals;
-  if(a && a.startedAt) return a.offset + (audioCtx.currentTime - a.startedAt);
-  return pausedOffset || Number(seek.value) || 0;
+
+/* --- connect media elements to audio graph safely --- */
+function ensureMediaNode(role){
+  const t = tracks[role];
+  if(!t || t.mode !== 'media' || !t.el) return;
+  try{
+    // createMediaElementSource can only be called once per element
+    if(!t.node){
+      if(!audioCtx) ensureCtx();
+      t.node = audioCtx.createMediaElementSource(t.el);
+      t.node.connect(role==='vocals' ? gainV : gainB);
+      log('created media node for', role);
+    }else{
+      // reconnect if disconnected
+      try{ t.node.disconnect(); }catch(e){}
+      t.node.connect(role==='vocals' ? gainV : gainB);
+      log('reconnected media node for', role);
+    }
+  }catch(e){
+    log('createMediaElementSource failed for', role, e && e.message ? e.message : e);
+    // fallback: still allow direct el.play() without connecting to graph
+  }
 }
 
 /* --- Start / Stop --- */
@@ -295,28 +339,21 @@ async function startAll(){
   }
   // update gains
   try{ gainV.gain.value = Number(volV.value); gainB.gain.value = Number(volB.value); masterGain.gain.value = Number(master.value); }catch(e){}
-  // buffer path
+
+  // BUFFER path (both buffers)
   if(tracks.vocals.mode === 'buffer' && tracks.backing.mode === 'buffer'){
     const offsetSec = Number(seek.value) || 0;
     startBufferPlayback(offsetSec);
     isPlaying = true; playBtn.textContent = '停止'; log('started buffer at', offsetSec);
     return;
   }
-  // media path: try to connect to webaudio, but tolerate failures
+
+  // MEDIA path: try to connect to webaudio
   for(const role of ['vocals','backing']){
-    const t = tracks[role];
-    if(t?.mode === 'media' && t.el){
-      try{
-        if(audioCtx && typeof audioCtx.createMediaElementSource === 'function' && !t.node){
-          t.node = audioCtx.createMediaElementSource(t.el);
-          t.node.connect(role==='vocals'?gainV:gainB);
-          log('connected media source', role);
-        }
-      }catch(e){
-        log('createMediaElementSource failed (will fallback to direct play)', role, e && e.message ? e.message : e);
-        // continue without node: playback will still use el.play()
-      }
-      // wait canplay if needed
+    if(tracks[role]?.mode === 'media'){
+      ensureMediaNode(role);
+      const t = tracks[role];
+      // ensure canplay and set time
       if(t.el.readyState < 3){
         await new Promise(resolve=>{
           const onCan = ()=>{ t.el.removeEventListener('canplay', onCan); resolve(); };
@@ -327,7 +364,8 @@ async function startAll(){
       try{ t.el.currentTime = Number(seek.value) || 0; }catch(e){}
     }
   }
-  // call play on elements (some may not be connected to audio graph, but will play)
+
+  // call play on elements (some browsers require this user gesture)
   const promises = [];
   if(tracks.vocals.mode === 'media' && tracks.vocals.el) promises.push(tracks.vocals.el.play().catch(e=>{ log('vocals.play fail', e && e.name); return e; }));
   if(tracks.backing.mode === 'media' && tracks.backing.el) promises.push(tracks.backing.el.play().catch(e=>{ log('backing.play fail', e && e.name); return e; }));
@@ -340,7 +378,6 @@ async function startAll(){
 function stopAll(){
   if(tracks.vocals?.mode === 'buffer' || tracks.backing?.mode === 'buffer'){
     stopBufferPlayback();
-    pausedOffset = getBufferCurrent();
   }
   ['vocals','backing'].forEach(role=>{
     const t = tracks[role];
@@ -352,14 +389,45 @@ function stopAll(){
 }
 
 /* --- UI wiring --- */
-playBtn.addEventListener('click', ()=>{ if(isPlaying) stopAll(); else startAll(); });
+playBtn.addEventListener('click', async ()=>{
+  // Some browsers need the user gesture to create/resume audio context
+  if(!audioCtx) ensureCtx();
+  if(isPlaying) stopAll(); else await startAll();
+});
 stopBtn.addEventListener('click', ()=> stopAll());
 
+let lastSeekByUser = false;
 seek.addEventListener('input', ()=>{
   lastSeekByUser = true;
   const v = Number(seek.value);
   curEl.textContent = fmt(v);
-  if(isPlaying){ stopAll(); startAll(); }
+  // if playing, jump to position
+  if(isPlaying){
+    // stop and restart at new position
+    stopAll();
+    // apply seek to buffer or media
+    if(tracks.vocals?.mode === 'buffer' || tracks.backing?.mode === 'buffer'){
+      pausedOffset = v;
+    } else {
+      // media
+      if(tracks.vocals?.mode === 'media' && tracks.vocals.el){
+        try{ tracks.vocals.el.currentTime = v; }catch(e){}
+      }
+      if(tracks.backing?.mode === 'media' && tracks.backing.el){
+        try{ tracks.backing.el.currentTime = v; }catch(e){}
+      }
+    }
+    // restart (do not await here to keep UI responsive)
+    startAll();
+  } else {
+    // not playing: set pausedOffset or element currentTime
+    if(tracks.vocals?.mode === 'buffer' || tracks.backing?.mode === 'buffer'){
+      pausedOffset = v;
+    } else {
+      if(tracks.vocals?.mode === 'media' && tracks.vocals.el) try{ tracks.vocals.el.currentTime = v; }catch(e){}
+      if(tracks.backing?.mode === 'media' && tracks.backing.el) try{ tracks.backing.el.currentTime = v; }catch(e){}
+    }
+  }
 });
 seek.addEventListener('change', ()=>{ lastSeekByUser = false; });
 
@@ -369,36 +437,45 @@ master.addEventListener('input', ()=>{ if(masterGain) masterGain.gain.value = Nu
 
 setInterval(()=>{
   if(isPlaying){
-    let cur = 0;
-    if(tracks.vocals?.mode==='buffer' || tracks.backing?.mode==='buffer') cur = getBufferCurrent();
-    else if(tracks.vocals?.mode==='media' && tracks.vocals.el && tracks.backing?.mode==='media' && tracks.backing.el) cur = Math.min(tracks.vocals.el.currentTime || 0, tracks.backing.el.currentTime || 0);
-    else if(tracks.vocals?.mode==='media' && tracks.vocals.el) cur = tracks.vocals.el.currentTime || 0;
-    else if(tracks.backing?.mode==='media' && tracks.backing.el) cur = tracks.backing.el.currentTime || 0;
-    seek.value = cur; curEl.textContent = fmt(cur);
+    let cur = getCurrentTime();
+    // clamp to total
+    const max = Number(seek.max) || Infinity;
+    if(isFinite(max)) cur = Math.min(cur, max);
+    if(!lastSeekByUser){
+      seek.value = cur;
+      curEl.textContent = fmt(cur);
+    }
   }
 }, 200);
 
 /* --- visualizer --- */
 const canvas = document.getElementById('viz'); const ctx = canvas.getContext('2d');
-function resize(){ canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight; }
-window.addEventListener('resize', resize); resize();
+function resizeCanvas(){
+  const ratio = window.devicePixelRatio || 1;
+  canvas.width = Math.floor(canvas.clientWidth * ratio);
+  canvas.height = Math.floor(canvas.clientHeight * ratio);
+  ctx.setTransform(ratio,0,0,ratio,0,0); // scale drawing to CSS pixels
+}
+window.addEventListener('resize', resizeCanvas); resizeCanvas();
 const freq = new Uint8Array(256);
 (function draw(){
   ctx.clearRect(0,0,canvas.width,canvas.height);
-  const w = canvas.width / freq.length, center = canvas.height/2;
+  const cw = canvas.clientWidth, ch = canvas.clientHeight;
+  const w = cw / freq.length, center = ch/2;
   if(analyser && audioCtx){
     analyser.getByteFrequencyData(freq);
     for(let i=0;i<freq.length;i+=2){
-      const v = freq[i]/255, h = v * (canvas.height/2), x = i * w;
-      ctx.fillStyle = i%4? '#38bdf8':'#7dd3fc';
-      ctx.fillRect(x, center-h, w*0.9, h);
+      const v = freq[i]/255, h = v * (ch/2) * 0.95, x = (i/2) * (w*2);
+      // mirror: draw up and down
+      ctx.fillStyle = (i%4)? '#38bdf8':'#7dd3fc';
+      ctx.fillRect(x, center - h, w*0.9, h);
       ctx.fillRect(x, center, w*0.9, h);
     }
   } else {
     for(let i=0;i<64;i++){
-      const x = i*(canvas.width/64), h = (Math.sin((Date.now()/300)+i)*0.4+0.5)*(canvas.height/3);
+      const x = i*(cw/64), h = (Math.sin((Date.now()/300)+i)*0.4+0.5)*(ch/3);
       ctx.fillStyle = '#243447';
-      ctx.fillRect(x, canvas.height/2 - h/2, canvas.width/64*0.85, h);
+      ctx.fillRect(x, ch/2 - h/2, cw/64*0.85, h);
     }
   }
   requestAnimationFrame(draw);
