@@ -178,13 +178,50 @@ async function setTracks(vBlob,bBlob,vName,bName){
   log('tracks loaded');
 }
 
-zipInput.onchange=async()=>{
-  const zip=await JSZip.loadAsync(zipInput.files[0]);
-  const n=Object.keys(zip.files).filter(n=>/\.(wav|mp3|m4a|aac|ogg)$/i.test(n));
-  const v=n.find(x=>/vocals/i.test(x))||n[0];
-  const b=n.find(x=>/inst|back/i.test(x))||n[1];
-  await setTracks(await zip.file(v).async('blob'),
-                  await zip.file(b).async('blob'),v,b);
+zipInput.onchange = async () => {
+  const file = zipInput.files[0];
+  zipInput.value = '';
+  if (!file) return;
+
+  log('ZIP select:', file.name);
+
+  try {
+    const zip = await JSZip.loadAsync(file);
+
+    // 音声ファイルのみ抽出
+    const names = Object.keys(zip.files).filter(n =>
+      !zip.files[n].dir &&
+      /\.(wav|mp3|m4a|aac|ogg)$/i.test(n)
+    );
+
+    if (names.length < 2) {
+      alert('ZIP内に音声ファイルが2つ以上必要です');
+      return;
+    }
+
+    // Demucs想定の自動判定
+    const vName =
+      names.find(n => /vocals?/i.test(n)) || names[0];
+    const bName =
+      names.find(n => /(inst|back|no[_-]?vocals?)/i.test(n) && n !== vName)
+      || names.find(n => n !== vName);
+
+    log('ZIP tracks:', vName, bName);
+
+    // ★ ここが重要：arraybuffer 経由
+    const vAB = await zip.file(vName).async('arraybuffer');
+    const bAB = await zip.file(bName).async('arraybuffer');
+
+    const vBlob = new Blob([vAB]);
+    const bBlob = new Blob([bAB]);
+
+    await setTracks(vBlob, bBlob, vName, bName);
+
+  } catch (e) {
+    console.error(e);
+    log('ZIP load failed:', e.message || e);
+    alert('ZIPの読み込みに失敗しました');
+  }
 };
 
 filesInput.onchange=async()=>{
