@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Demucs Player</title>
+<title>Demucs Player — Viz 増設版</title>
 
 <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
@@ -26,60 +26,32 @@ main{max-width:900px;margin:18px auto;padding:14px}
 
 canvas{
   width:100%;
-  height:260px;
+  height:300px; /* 少し高さを増やして目盛りを入れる */
   background:#0b0d12;
-  border-radius:12px
+  border-radius:12px;
+  display:block;
 }
 
 .btn{
   background:linear-gradient(90deg,#38bdf8,#4ade80);
-  color:#012;
-  border:none;
-  padding:8px 12px;
-  border-radius:8px;
-  font-weight:700;
-  cursor:pointer
+  color:#012;border:none;padding:8px 12px;border-radius:8px;font-weight:700;cursor:pointer
 }
 
 .small{font-size:13px;color:#b8cbe0}
 
 .log{
-  background:#071018;
-  color:#9fbfd6;
-  font-size:.85rem;
-  border-radius:8px;
-  padding:8px;
-  max-height:160px;
-  overflow:auto;
-  white-space:pre-wrap
+  background:#071018;color:#9fbfd6;font-size:.85rem;border-radius:8px;padding:8px;max-height:160px;overflow:auto;white-space:pre-wrap
 }
 
-/* ===== 縦スライダー（被り修正済み） ===== */
-.v-slider{
-  display:flex;
-  flex-direction:column;
-  align-items:center;
-  height:180px;
-}
+/* 縦スライダー */
+.v-slider{display:flex;flex-direction:column;align-items:center;height:180px}
+.v-label{font-size:13px;color:#b8cbe0;margin-bottom:12px}
+.slider-vert{width:150px;height:22px;transform:rotate(-90deg);margin-top:28px}
 
-.v-label{
-  font-size:13px;
-  color:#b8cbe0;
-  margin-bottom:12px; /* 文字と確実に離す */
-}
+@media(max-width:760px){ .top{grid-template-columns:1fr} .v-slider{display:none} }
 
-.slider-vert{
-  width:150px;
-  height:22px;
-  transform:rotate(-90deg);
-  margin-top:28px;   /* ← 被り防止の本体 */
-}
-/* ====================================== */
-
-@media(max-width:760px){
-  .top{grid-template-columns:1fr}
-  .v-slider{display:none}
-}
+/* viz テキストスタイル */
+.viz-label{font-family:monospace;color:#9fbfd6;font-size:12px}
 </style>
 </head>
 <body>
@@ -97,18 +69,14 @@ canvas{
 <div class="top">
   <div class="v-slider">
     <div class="v-label">Vocals</div>
-    <input id="volV" type="range"
-           min="0" max="1" step="0.01" value="1"
-           class="slider-vert">
+    <input id="volV" type="range" min="0" max="1" step="0.01" value="1" class="slider-vert">
   </div>
 
   <canvas id="viz"></canvas>
 
   <div class="v-slider">
     <div class="v-label">Backing</div>
-    <input id="volB" type="range"
-           min="0" max="1" step="0.01" value="1"
-           class="slider-vert">
+    <input id="volB" type="range" min="0" max="1" step="0.01" value="1" class="slider-vert">
   </div>
 </div>
 
@@ -121,9 +89,7 @@ canvas{
 
   <div style="display:flex;align-items:center;gap:8px;margin-top:8px">
     <span class="small">Master</span>
-    <input id="master" type="range"
-           min="0" max="1" step="0.01" value="1"
-           style="flex:1">
+    <input id="master" type="range" min="0" max="1" step="0.01" value="1" style="flex:1">
     <span id="filename" class="small">未選択</span>
   </div>
 
@@ -132,28 +98,29 @@ canvas{
 </main>
 
 <input id="zipInput" type="file" accept=".zip" hidden>
-<input id="filesInput"
-       type="file"
-       multiple
-       hidden
-       accept=".wav,.mp3,.m4a,.aac,.ogg">
+<input id="filesInput" type="file" multiple hidden accept=".wav,.mp3,.m4a,.aac,.ogg">
 
 <script>
-/* util */
+/* ---------- util ---------- */
 const logEl=document.getElementById('log');
-const log=(...a)=>{logEl.textContent+=a.join(' ')+'\\n';logEl.scrollTop=1e9};
+const log=(...a)=>{ logEl.textContent+=a.join(' ')+'\\n'; logEl.scrollTop=1e9; };
 const fmt=s=>!isFinite(s)?'0:00':`${Math.floor(s/60)}:${String(Math.floor(s)%60).padStart(2,'0')}`;
 
-/* audio */
-let ctx,analyser,masterGain,gainV,gainB;
-let buffers={},sources={},startTime=0,pausedAt=0,playing=false;
+/* ---------- audio （既存ロジック維持） ---------- */
+let ctx, analyser, masterGain, gainV, gainB;
+let buffers={}, sources={}, startTime=0, pausedAt=0, playing=false;
 
 function ensureCtx(){
-  if(ctx)return;
-  ctx=new (AudioContext||webkitAudioContext)();
-  analyser=ctx.createAnalyser(); analyser.fftSize=512;
-  masterGain=ctx.createGain();
-  gainV=ctx.createGain(); gainB=ctx.createGain();
+  if(ctx) return;
+  ctx = new (AudioContext||webkitAudioContext)();
+  analyser = ctx.createAnalyser();
+  analyser.fftSize = 512; // 512 は元の値を維持
+  // 少し視認性のため decibel 範囲を広めに設定（安全）
+  analyser.minDecibels = -100;
+  analyser.maxDecibels = -20;
+
+  masterGain = ctx.createGain();
+  gainV = ctx.createGain(); gainB = ctx.createGain();
   gainV.connect(masterGain); gainB.connect(masterGain);
   masterGain.connect(analyser); analyser.connect(ctx.destination);
   log('AudioContext ready');
@@ -161,20 +128,20 @@ function ensureCtx(){
 
 async function decode(ab){
   ensureCtx();
-  return new Promise((res,rej)=>ctx.decodeAudioData(ab,res,rej));
+  return new Promise((res, rej)=> ctx.decodeAudioData(ab, res, rej));
 }
 
-/* load */
+/* ---------- load (zip 修正：arraybuffer 経由) ---------- */
 async function setTracks(vBlob,bBlob,vName,bName){
-  const vb=await decode(await vBlob.arrayBuffer());
-  const bb=await decode(await bBlob.arrayBuffer());
-  buffers={vocals:vb,backing:bb};
+  const vb = await decode(await vBlob.arrayBuffer());
+  const bb = await decode(await bBlob.arrayBuffer());
+  buffers = { vocals: vb, backing: bb };
 
-  const d=Math.min(vb.duration,bb.duration);
-  seek.max=d;
-  total.textContent=fmt(d);
-  filename.textContent=vName+' / '+bName;
-  playBtn.disabled=stopBtn.disabled=false;
+  const d = Math.min(vb.duration, bb.duration);
+  seek.max = d;
+  total.textContent = fmt(d);
+  filename.textContent = vName + ' / ' + bName;
+  playBtn.disabled = stopBtn.disabled = false;
   log('tracks loaded');
 }
 
@@ -182,61 +149,41 @@ zipInput.onchange = async () => {
   const file = zipInput.files[0];
   zipInput.value = '';
   if (!file) return;
-
   log('ZIP select:', file.name);
-
-  try {
+  try{
     const zip = await JSZip.loadAsync(file);
-
-    // 音声ファイルのみ抽出
-    const names = Object.keys(zip.files).filter(n =>
-      !zip.files[n].dir &&
-      /\.(wav|mp3|m4a|aac|ogg)$/i.test(n)
-    );
-
-    if (names.length < 2) {
-      alert('ZIP内に音声ファイルが2つ以上必要です');
-      return;
-    }
-
-    // Demucs想定の自動判定
-    const vName =
-      names.find(n => /vocals?/i.test(n)) || names[0];
-    const bName =
-      names.find(n => /(inst|back|no[_-]?vocals?)/i.test(n) && n !== vName)
-      || names.find(n => n !== vName);
-
+    const names = Object.keys(zip.files).filter(n => !zip.files[n].dir && /\.(wav|mp3|m4a|aac|ogg)$/i.test(n));
+    if(names.length < 2){ alert('ZIP内に音声ファイルが2つ以上必要です'); return; }
+    const vName = names.find(n=>/vocals?/i.test(n)) || names[0];
+    const bName = names.find(n=>/(inst|back|no[_-]?vocals?)/i.test(n) && n!==vName) || names.find(n=>n!==vName);
     log('ZIP tracks:', vName, bName);
-
-    // ★ ここが重要：arraybuffer 経由
+    // arraybuffer 経由で取り出して Blob にする（Safari 対策）
     const vAB = await zip.file(vName).async('arraybuffer');
     const bAB = await zip.file(bName).async('arraybuffer');
-
     const vBlob = new Blob([vAB]);
     const bBlob = new Blob([bAB]);
-
     await setTracks(vBlob, bBlob, vName, bName);
-
-  } catch (e) {
+  }catch(e){
     console.error(e);
-    log('ZIP load failed:', e.message || e);
+    log('ZIP load failed:', e && e.message ? e.message : e);
     alert('ZIPの読み込みに失敗しました');
   }
 };
 
-filesInput.onchange=async()=>{
-  const f=[...filesInput.files];
-  if(f.length<2)return alert('2ファイル必要');
-  await setTracks(f[0],f[1],f[0].name,f[1].name);
+filesInput.onchange = async () => {
+  const f = [...filesInput.files];
+  filesInput.value = '';
+  if(f.length < 2) return alert('2ファイル必要');
+  await setTracks(f[0], f[1], f[0].name, f[1].name);
 };
 
-/* play */
+/* ---------- play / stop（既存ロジック維持） ---------- */
 function stop(){
-  Object.values(sources).forEach(s=>{try{s.stop()}catch{}});
-  sources={};
+  Object.values(sources).forEach(s=>{ try{s.stop()}catch{} });
+  sources = {};
   pausedAt = ctx ? ctx.currentTime - startTime : pausedAt;
-  playing=false;
-  playBtn.textContent='再生';
+  playing = false;
+  playBtn.textContent = '再生';
 }
 
 function start(){
@@ -244,62 +191,175 @@ function start(){
   ctx.resume();
   stop();
 
-  const offset = Number(seek.value)||0;
+  const offset = Number(seek.value) || 0;
   startTime = ctx.currentTime - offset;
 
   ['vocals','backing'].forEach(k=>{
-    const s=ctx.createBufferSource();
-    s.buffer=buffers[k];
-    s.connect(k==='vocals'?gainV:gainB);
-    s.start(0,offset);
-    sources[k]=s;
+    const s = ctx.createBufferSource();
+    s.buffer = buffers[k];
+    s.connect(k === 'vocals' ? gainV : gainB);
+    s.start(0, offset);
+    sources[k] = s;
   });
 
-  playing=true;
-  playBtn.textContent='停止';
+  playing = true;
+  playBtn.textContent = '停止';
 }
 
 function getTime(){
   return playing ? ctx.currentTime - startTime : pausedAt;
 }
 
-/* UI */
-playBtn.onclick=()=>playing?stop():start();
-stopBtn.onclick=stop;
+/* ---------- UI wiring ---------- */
+playBtn.onclick = ()=> playing ? stop() : start();
+stopBtn.onclick = stop;
 
-volV.oninput=()=>gainV&&(gainV.gain.value=volV.value);
-volB.oninput=()=>gainB&&(gainB.gain.value=volB.value);
-master.oninput=()=>masterGain&&(masterGain.gain.value=master.value);
+volV.oninput = ()=> gainV && (gainV.gain.value = volV.value);
+volB.oninput = ()=> gainB && (gainB.gain.value = volB.value);
+master.oninput = ()=> masterGain && (masterGain.gain.value = master.value);
 
-seek.oninput=()=>{
-  cur.textContent=fmt(seek.value);
+seek.oninput = ()=>{
+  cur.textContent = fmt(seek.value);
   if(playing) start();
 };
 
 setInterval(()=>{
   if(playing){
-    const t=getTime();
-    seek.value=t;
-    cur.textContent=fmt(t);
+    const t = getTime();
+    seek.value = t;
+    cur.textContent = fmt(t);
   }
 },200);
 
-/* viz */
-const c=viz.getContext('2d'),freq=new Uint8Array(256);
-(function draw(){
-  c.clearRect(0,0,viz.width,viz.height);
-  if(analyser){
-    analyser.getByteFrequencyData(freq);
-    const w=viz.width/freq.length,h=viz.height/2;
-    for(let i=0;i<freq.length;i+=2){
-      const v=freq[i]/255*h;
-      c.fillStyle='#38bdf8';
-      c.fillRect(i*w,h-v,w*0.8,v);
-      c.fillRect(i*w,h,w*0.8,v);
+/* ---------- visualizer（拡張） ---------- */
+const canvas = document.getElementById('viz');
+const ctx2 = canvas.getContext('2d');
+
+function resizeCanvas(){
+  const ratio = window.devicePixelRatio || 1;
+  canvas.width = Math.floor(canvas.clientWidth * ratio);
+  canvas.height = Math.floor(canvas.clientHeight * ratio);
+  ctx2.setTransform(ratio,0,0,ratio,0,0);
+}
+window.addEventListener('resize', resizeCanvas);
+resizeCanvas();
+
+const freqBins = new Uint8Array(256); // will be sized by analyser
+let floatFreq = null;
+let timeDomain = null;
+
+function drawViz(){
+  const cw = canvas.clientWidth;
+  const ch = canvas.clientHeight;
+  ctx2.clearRect(0,0,cw,ch);
+
+  if(analyser && ctx){
+    const binCount = analyser.frequencyBinCount;
+    if(floatFreq == null || floatFreq.length !== binCount) {
+      floatFreq = new Float32Array(binCount);
+      freqBins = new Uint8Array(binCount);
+      timeDomain = new Float32Array(analyser.fftSize);
+    }
+
+    // 周波数スペクトル（dB）
+    analyser.getFloatFrequencyData(floatFreq);
+    analyser.getByteFrequencyData(freqBins);
+    analyser.getFloatTimeDomainData(timeDomain); // for RMS -> dBFS
+
+    // compute RMS (time domain) -> dBFS
+    let sum = 0;
+    for(let i=0;i<timeDomain.length;i++){ sum += timeDomain[i]*timeDomain[i]; }
+    const rms = Math.sqrt(sum / timeDomain.length) || 0.000001;
+    const dbfs = 20 * Math.log10(rms); // negative number, 0 is max
+
+    // draw left-side dB scale
+    const dBTop = analyser.maxDecibels;   // e.g. -20
+    const dBBottom = analyser.minDecibels; // e.g. -100
+    const dBRange = dBTop - dBBottom;
+    ctx2.fillStyle = '#9fbfd6';
+    ctx2.font = '11px monospace';
+    ctx2.textAlign = 'right';
+    ctx2.textBaseline = 'middle';
+    const leftPad = 46; // space for dB labels
+    for(let d = Math.ceil(dBBottom/10)*10; d <= dBTop; d += 10){
+      const y = ((dBTop - d) / dBRange) * (ch - 10) + 5;
+      ctx2.fillStyle = '#2e4b56';
+      ctx2.fillRect(leftPad-8, y-0.5, cw-leftPad, 1); // faint grid
+      ctx2.fillStyle = '#9fbfd6';
+      ctx2.fillText(String(d)+' dB', leftPad-10, y);
+    }
+
+    // draw spectral bars (using floatFreq in dB mapped to height)
+    const nyquist = ctx.sampleRate / 2;
+    const binFreq = ctx.sampleRate / analyser.fftSize;
+    const usableWidth = cw - leftPad - 10;
+    const barWidth = usableWidth / floatFreq.length;
+    for(let i=0;i<floatFreq.length;i++){
+      const fdb = floatFreq[i]; // already in dB
+      // map dB to 0..1
+      let v = (fdb - dBBottom) / dBRange;
+      v = Math.max(0, Math.min(1, v));
+      const x = leftPad + i * barWidth;
+      const h = v * (ch - 20);
+      // color gradient by frequency (low->cyan, high->lightblue)
+      ctx2.fillStyle = i%2 ? '#38bdf8' : '#7dd3fc';
+      ctx2.fillRect(x, ch - 10 - h, Math.max(1, barWidth*0.9), h);
+    }
+
+    // draw frequency marker lines & labels for standard freqs
+    const freqs = [50,100,200,500,1000,2000,5000,10000,20000];
+    ctx2.fillStyle = '#cfeff7';
+    ctx2.font = '11px monospace';
+    ctx2.textAlign = 'center';
+    ctx2.textBaseline = 'top';
+    for(const f of freqs){
+      if(f > nyquist) continue;
+      const binIndex = Math.round(f / binFreq);
+      const x = leftPad + binIndex * barWidth;
+      ctx2.strokeStyle = '#2a6b79';
+      ctx2.beginPath(); ctx2.moveTo(x+0.5, 6); ctx2.lineTo(x+0.5, ch-12); ctx2.stroke();
+      ctx2.fillStyle = '#cfeff7';
+      const label = (f >= 1000) ? (f/1000)+'k' : String(f);
+      ctx2.fillText(label, x+0.5, ch - 10);
+    }
+
+    // draw RMS dB numeric and a small meter at bottom-left
+    ctx2.fillStyle = '#9fbfd6';
+    ctx2.font = '12px monospace';
+    ctx2.textAlign = 'left';
+    ctx2.textBaseline = 'bottom';
+    const dbLabel = dbfs.toFixed(1) + ' dBFS';
+    ctx2.fillText('Level: ' + dbLabel, leftPad + 6, 18);
+
+    // small horizontal meter (normalized)
+    const meterW = 140, meterH = 8;
+    const meterX = leftPad + 6, meterY = 34;
+    // Map dbfs range -100 .. 0 to 0..1
+    const meterNorm = Math.max(0, Math.min(1, (dbfs - dBBottom) / dBRange));
+    ctx2.fillStyle = '#143d46';
+    ctx2.fillRect(meterX, meterY, meterW, meterH);
+    ctx2.fillStyle = '#38bdf8';
+    ctx2.fillRect(meterX, meterY, meterW * meterNorm, meterH);
+    ctx2.strokeStyle = '#072f36';
+    ctx2.strokeRect(meterX, meterY, meterW, meterH);
+
+    // draw legend top-left
+    ctx2.fillStyle = '#9fbfd6';
+    ctx2.font = '11px monospace';
+    ctx2.fillText('Freq (Hz) / Level (dB)', leftPad + 6, 4);
+  } else {
+    // idle animation
+    ctx2.fillStyle = '#243447';
+    for(let i=0;i<64;i++){
+      const x = i*(canvas.clientWidth/64), h = (Math.sin((Date.now()/300)+i)*0.4+0.5)*(canvas.clientHeight/3);
+      ctx2.fillRect(x, canvas.clientHeight/2 - h/2, canvas.clientWidth/64*0.85, h);
     }
   }
-  requestAnimationFrame(draw);
-})();
+
+  requestAnimationFrame(drawViz);
+}
+requestAnimationFrame(drawViz);
+
 </script>
 </body>
 </html>
