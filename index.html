@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Demucs Player — 安定・メディア優先再生版</title>
+<title>Demucs Player — メディア優先 安定化版 (DOMにAudioを保持)</title>
 
 <!-- CDN -->
 <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
@@ -13,47 +13,38 @@
   :root{--bg:#0f1115;--panel:#0b0d11;--accent:#38bdf8}
   body{background:linear-gradient(180deg,var(--bg),#050507);color:#e9eef6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial;margin:0}
   main{max-width:980px;margin:28px auto;padding:18px}
-  header{display:flex;align-items:center;gap:12px}
-  .controls{display:flex;gap:12px;flex-wrap:wrap;margin:12px 0}
   .panel{background:var(--panel);padding:12px;border-radius:12px}
   canvas{width:100%;height:160px;border-radius:8px;background:#0b0c0e;display:block}
   .meta{display:flex;justify-content:space-between;align-items:center;margin-top:8px}
   .small{font-size:13px;color:#a6b1c6}
   input[type=file]{display:none}
   .btn{background:linear-gradient(90deg,var(--accent),#4ade80);color:#012;border:none;padding:10px 14px;border-radius:10px;font-weight:600;cursor:pointer}
-  .btn:disabled{opacity:.5}
   label{display:block;margin-top:8px}
-  .row{display:flex;gap:8px;align-items:center}
   pre{white-space:pre-wrap;word-break:break-word;background:#071018;padding:8px;border-radius:8px;color:#9fbfd6;max-height:200px;overflow:auto}
   .time{font-variant-numeric: tabular-nums;}
   .seek{width:100%}
+  /* hidden audio pool visible only when debugging */
+  #audioPool{display:none}
 </style>
 </head>
 <body>
 <main>
-  <header>
-    <h1 style="margin:0;font-size:20px">Demucs Player</h1>
-    <div class="small">安定版 — メディア要素優先で再生（wav選択可）</div>
-  </header>
-
+  <h1 style="font-size:20px">Demucs Player — 安定版</h1>
   <section class="panel">
-    <div class="controls">
-      <!-- label[for]で安定的にファイルピッカーを開く -->
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">
       <label for="zipInput" class="btn">ZIP を読み込む</label>
       <label for="filesInput" class="btn">2 ファイルを選択</label>
       <button id="play" class="btn" disabled>再生</button>
       <button id="stop" class="btn" disabled>停止</button>
-      <label class="row">Loop<input id="loop" type="checkbox"></label>
+      <label style="display:flex;align-items:center;gap:6px"><input id="loop" type="checkbox"> Loop</label>
     </div>
 
     <label>Vocals ゲイン
       <input id="vocalsGain" type="range" min="0" max="2" step="0.01" value="1">
     </label>
-
     <label>Backing ゲイン
       <input id="backingGain" type="range" min="0" max="2" step="0.01" value="1">
     </label>
-
     <label>Master
       <input id="master" type="range" min="0" max="1" step="0.01" value="1">
     </label>
@@ -63,7 +54,7 @@
       <div class="small" id="status">準備完了</div>
     </div>
 
-    <div style="margin-top:8px">
+    <div style="margin-top:8px;">
       <div style="display:flex;align-items:center;gap:8px">
         <div class="time" id="current">0:00</div>
         <input id="seek" class="seek" type="range" min="0" max="1" step="0.001" value="0">
@@ -73,91 +64,118 @@
 
     <canvas id="viz"></canvas>
     <h4 class="small">デバッグログ</h4>
-    <pre id="log">ログはここに表示されます。</pre>
+    <pre id="log">ログはここに出ます</pre>
   </section>
 
-  <!-- file inputs hidden (accept widened to include wav explicitly) -->
   <input id="zipInput" type="file" accept=".zip" />
   <input id="filesInput" type="file" accept=".wav,.mp3,.m4a,.aac,audio/*" multiple />
+
+  <!-- Audio elements are appended here (keeps blob URLs alive and avoids GC) -->
+  <div id="audioPool" aria-hidden="true"></div>
 </main>
 
 <script>
-// ログ
 const logEl = document.getElementById('log');
 function log(...items){ console.log(...items); logEl.textContent += items.map(i=>typeof i==='object'?JSON.stringify(i):String(i)).join(' ') + '\n'; logEl.scrollTop = 1e9; }
 
-// UI refs
 const playBtn = document.getElementById('play');
 const stopBtn = document.getElementById('stop');
+const zipInput = document.getElementById('zipInput');
+const filesInput = document.getElementById('filesInput');
+const audioPool = document.getElementById('audioPool');
 const vocalsGainSlider = document.getElementById('vocalsGain');
 const backingGainSlider = document.getElementById('backingGain');
 const masterSlider = document.getElementById('master');
-const loopCheckbox = document.getElementById('loop');
-const filenameEl = document.getElementById('filename');
-const statusEl = document.getElementById('status');
-const zipInput = document.getElementById('zipInput');
-const filesInput = document.getElementById('filesInput');
-const canvas = document.getElementById('viz');
-const ctx = canvas.getContext('2d');
 const seek = document.getElementById('seek');
 const currentEl = document.getElementById('current');
 const totalEl = document.getElementById('total');
+const filenameEl = document.getElementById('filename');
+const statusEl = document.getElementById('status');
+const canvas = document.getElementById('viz');
+const ctx = canvas.getContext('2d');
 
-// Audio state
-let audioCtx = null; let analyser = null; let masterGain = null, gainV = null, gainB = null;
-let tracks = { vocals: null, backing: null }; // { fileName, mode:'media', el, blobUrl, arrayBuffer }
+let audioCtx=null, analyser=null, masterGain=null, gainV=null, gainB=null;
+let tracks = { vocals: null, backing: null };
 let isPlaying = false;
 let lastSeekSetByUser = false;
 
-function ensureAudioCtx(){ if(audioCtx) return; try{ audioCtx = new (window.AudioContext || window.webkitAudioContext)(); analyser = audioCtx.createAnalyser(); analyser.fftSize = 512; masterGain = audioCtx.createGain(); gainV = audioCtx.createGain(); gainB = audioCtx.createGain(); gainV.connect(masterGain); gainB.connect(masterGain); masterGain.connect(analyser); analyser.connect(audioCtx.destination); log('AudioContext created, state=', audioCtx.state); updateControlsFromSliders(); }catch(e){ log('AudioContext creation failed:', e); } }
+function ensureAudioCtx(){ if(audioCtx) return; try{ audioCtx = new (window.AudioContext || window.webkitAudioContext)(); analyser = audioCtx.createAnalyser(); analyser.fftSize = 512; masterGain = audioCtx.createGain(); gainV = audioCtx.createGain(); gainB = audioCtx.createGain(); gainV.connect(masterGain); gainB.connect(masterGain); masterGain.connect(analyser); analyser.connect(audioCtx.destination); log('AudioContext created state=' + audioCtx.state); updateControlsFromSliders(); }catch(e){ log('AudioContext create failed', e); } }
 
 function updateControlsFromSliders(){ const v = Number(vocalsGainSlider.value); const b = Number(backingGainSlider.value); const m = Number(masterSlider.value); if(gainV && gainB){ gainV.gain.value = v; gainB.gain.value = b; } if(masterGain) masterGain.gain.value = m; const masterScale = Math.max(0, Math.min(1, m)); if(tracks.vocals?.el) tracks.vocals.el.volume = Math.max(0, Math.min(1, v * masterScale)); if(tracks.backing?.el) tracks.backing.el.volume = Math.max(0, Math.min(1, b * masterScale)); }
 
 function isAppleDouble(name){ if(!name) return false; const n = name.toLowerCase(); if(n.startsWith('__macosx/')) return true; const parts = name.split('/'); const base = parts[parts.length-1]; if(base.startsWith('._')) return true; if(base.startsWith('.')) return true; return false; }
-
 function fmt(sec){ if(!isFinite(sec)) return '0:00'; sec = Math.max(0, Math.floor(sec)); const m = Math.floor(sec/60); const s = sec%60; return `${m}:${s.toString().padStart(2,'0')}`; }
 
-// create media track from Blob (used for both ZIP and files) - always media mode for playback
-async function makeMediaTrackFromArrayBuffer(arrayBuffer, fileName){ const blob = new Blob([arrayBuffer]); const url = URL.createObjectURL(blob); const el = new Audio(url); el.preload = 'auto'; return { fileName, mode:'media', el, blobUrl: url, arrayBuffer }; }
+// create audio element and append to DOM to avoid iOS/Safari issues
+function createAudioElementFromBlob(blob, fileName){ const url = URL.createObjectURL(blob); const el = document.createElement('audio'); el.src = url; el.preload = 'auto'; el.playsInline = true; el.setAttribute('playsinline',''); el.style.display = 'none'; el.controls = false; // keep it in the DOM (hidden) so iOS handles it reliably
+  audioPool.appendChild(el);
+  el.addEventListener('error', (ev)=>{ log('audio element error', fileName, ev); });
+  el.addEventListener('loadedmetadata', ()=>{ log('loadedmetadata', fileName, 'duration=', el.duration); try{ const dur = Math.min((tracks.vocals?.el?.duration)||Infinity, (tracks.backing?.el?.duration)||Infinity); if(isFinite(dur)){ seek.max = dur; totalEl.textContent = fmt(dur); } }catch(e){} });
+  el.addEventListener('timeupdate', ()=>{ if(!lastSeekSetByUser){ const cur = getCurrentTime(); seek.value = cur; currentEl.textContent = fmt(cur); } });
+  return { fileName, mode:'media', el, blobUrl: url, blob }; }
 
-// ZIP loader (use blob entries to avoid decode step)
-zipInput.addEventListener('change', async ()=>{ const file = zipInput.files[0]; zipInput.value=''; if(!file) return; statusEl.textContent='ZIP を展開中...'; log('ZIP select', file.name); try{ const zip = await JSZip.loadAsync(file); const entries=[]; zip.forEach((p,e)=>entries.push(e)); const audioEntries = entries.filter(e=>{ const n=e.name; if(isAppleDouble(n)) return false; return n.match(/\.(wav|mp3|m4a|aac)$/i); }); log('audioEntries', audioEntries.map(e=>e.name)); const findBy=(regex,exclude)=>audioEntries.find(e=>regex.test(e.name)&&e!==exclude); let vEntry=findBy(/(^|\/)\S*vocals\S*\.(wav|mp3|m4a|aac)$/i,null); let bEntry=findBy(/(^|\/)\S*(no_vocals|no-vocals|no\svocals|back|inst|instrumental)\S*\.(wav|mp3|m4a|aac)$/i,vEntry); if(!vEntry) vEntry = audioEntries.find(e=>/vocals/i.test(e.name)); if(!bEntry) bEntry = audioEntries.find(e=>/no_vocals|no-vocals|back|inst|instrumental/i.test(e.name) && e!==vEntry); if(!vEntry||!bEntry){ const distinct = audioEntries.filter(e=>e!==vEntry); if(!vEntry && audioEntries.length>0) vEntry = audioEntries[0]; if(!bEntry && audioEntries.length>1) bEntry = audioEntries.find(e=>e!==vEntry) || distinct[0]; } if(!vEntry||!bEntry){ statusEl.textContent='対象ファイル不足'; alert('zip内に適切な音声ファイルが見つかりません'); log('vEntry/bEntry not found', vEntry && vEntry.name, bEntry && bEntry.name); return; } log('selected entries', vEntry.name, bEntry.name); // get blobs
-    const vBlob = await vEntry.async('blob'); const bBlob = await bEntry.async('blob'); const vAb = await vBlob.arrayBuffer(); const bAb = await bBlob.arrayBuffer(); tracks.vocals = await makeMediaTrackFromArrayBuffer(vAb, vEntry.name); tracks.backing = await makeMediaTrackFromArrayBuffer(bAb, bEntry.name); filenameEl.textContent = `${tracks.vocals.fileName} / ${tracks.backing.fileName}`; statusEl.textContent = 'ZIP 読み込み完了'; log('tracks set', tracks); playBtn.disabled=false; stopBtn.disabled=false; // attach metadata listeners
-    [['vocals',tracks.vocals],['backing',tracks.backing]].forEach(([role,t])=>{ if(t && t.el){ t.el.addEventListener('loadedmetadata', ()=>{ try{ const dur = Math.min((tracks.vocals.el && tracks.vocals.el.duration) || Infinity, (tracks.backing.el && tracks.backing.el.duration) || Infinity); if(isFinite(dur)){ seek.max = dur; totalEl.textContent = fmt(dur); } }catch(e){} }); t.el.addEventListener('timeupdate', ()=>{ if(!lastSeekSetByUser){ const cur = getCurrentTime(); seek.value = cur; currentEl.textContent = fmt(cur); } }); } }); }catch(e){ log('zip error', e); statusEl.textContent='ZIP読み込み失敗'; alert('ZIP 読み込みに失敗しました'); } });
+async function makeMediaTrackFromArrayBuffer(arrayBuffer, fileName){ const blob = new Blob([arrayBuffer]); return createAudioElementFromBlob(blob, fileName); }
 
-// Files loader (2 files) - accept includes wav explicitly
-filesInput.addEventListener('change', async ()=>{ const files = Array.from(filesInput.files); filesInput.value=''; if(files.length<2){ alert('2 ファイルを選択してください'); return; } const vocalsFile = files.find(f=>/vocals/i.test(f.name))||files[0]; const backingFile = files.find(f=>/no_vocals|no-vocals|back|inst|instrumental/i.test(f.name))||files[1]; // create tracks
-  const vAb = await vocalsFile.arrayBuffer(); const bAb = await backingFile.arrayBuffer(); tracks.vocals = await makeMediaTrackFromArrayBuffer(vAb, vocalsFile.name); tracks.backing = await makeMediaTrackFromArrayBuffer(bAb, backingFile.name); filenameEl.textContent = `${tracks.vocals.fileName} / ${tracks.backing.fileName}`; statusEl.textContent='ファイル読み込み完了'; log('tracks set', tracks); playBtn.disabled=false; stopBtn.disabled=false; // listeners
-  [['vocals',tracks.vocals],['backing',tracks.backing]].forEach(([role,t])=>{ if(t && t.el){ t.el.addEventListener('loadedmetadata', ()=>{ try{ const dur = Math.min((tracks.vocals.el && tracks.vocals.el.duration) || Infinity, (tracks.backing.el && tracks.backing.el.duration) || Infinity); if(isFinite(dur)){ seek.max = dur; totalEl.textContent = fmt(dur); } }catch(e){} }); t.el.addEventListener('timeupdate', ()=>{ if(!lastSeekSetByUser){ const cur = getCurrentTime(); seek.value = cur; currentEl.textContent = fmt(cur); } }); } }); });
+// ZIP loader
+zipInput.addEventListener('change', async ()=>{
+  const file = zipInput.files[0]; zipInput.value=''; if(!file) return; statusEl.textContent='ZIP を展開中...'; log('ZIP select', file.name);
+  try{
+    const zip = await JSZip.loadAsync(file);
+    const entries = []; zip.forEach((p,e)=>entries.push(e));
+    const audioEntries = entries.filter(e=>{ const n=e.name; if(isAppleDouble(n)) return false; return n.match(/\.(wav|mp3|m4a|aac)$/i); });
+    log('audioEntries', audioEntries.map(e=>e.name));
+    const findBy = (regex, exclude) => audioEntries.find(e => regex.test(e.name) && e !== exclude);
+    let vEntry = findBy(/(^|\/)\S*vocals\S*\.(wav|mp3|m4a|aac)$/i, null);
+    let bEntry = findBy(/(^|\/)\S*(no_vocals|no-vocals|no\svocals|back|inst|instrumental)\S*\.(wav|mp3|m4a|aac)$/i, vEntry);
+    if(!vEntry) vEntry = audioEntries.find(e => /vocals/i.test(e.name));
+    if(!bEntry) bEntry = audioEntries.find(e => /no_vocals|no-vocals|back|inst|instrumental/i.test(e.name) && e !== vEntry);
+    if(!vEntry || !bEntry){ const distinct = audioEntries.filter(e=>e !== vEntry); if(!vEntry && audioEntries.length>0) vEntry = audioEntries[0]; if(!bEntry && audioEntries.length>1) bEntry = audioEntries.find(e=>e !== vEntry) || distinct[0]; }
+    if(!vEntry || !bEntry){ statusEl.textContent='対象ファイル不足'; alert('zip内に適切な音声ファイルが見つかりません'); log('vEntry/bEntry not found', vEntry && vEntry.name, bEntry && bEntry.name); return; }
+    log('selected entries', vEntry.name, bEntry.name);
+    const vBlob = await vEntry.async('blob'); const bBlob = await bEntry.async('blob'); tracks.vocals = await createAudioElementFromBlob(vBlob, vEntry.name); tracks.backing = await createAudioElementFromBlob(bBlob, bEntry.name);
+    filenameEl.textContent = `${tracks.vocals.fileName} / ${tracks.backing.fileName}`;
+    statusEl.textContent = 'ZIP 読み込み完了'; log('tracks set', {vocals:tracks.vocals.fileName, backing:tracks.backing.fileName}); playBtn.disabled=false; stopBtn.disabled=false;
+  }catch(e){ log('zip error', e); statusEl.textContent='ZIP読み込み失敗'; alert('ZIP 読み込みに失敗しました'); }
+});
 
-// helpers to get current time
-function getCurrentTime(){ try{ if(tracks.vocals?.el && tracks.backing?.el){ return Math.min(tracks.vocals.el.currentTime || 0, tracks.backing.el.currentTime || 0); } if(tracks.vocals?.el) return tracks.vocals.el.currentTime || 0; if(tracks.backing?.el) return tracks.backing.el.currentTime || 0; return 0; }catch(e){ return 0; } }
+// Files loader
+filesInput.addEventListener('change', async ()=>{
+  const files = Array.from(filesInput.files); filesInput.value=''; if(files.length < 2){ alert('2 ファイルを選択してください'); return; }
+  const vocalsFile = files.find(f=>/vocals/i.test(f.name)) || files[0];
+  const backingFile = files.find(f=>/no_vocals|no-vocals|back|inst|instrumental/i.test(f.name)) || files[1];
+  const vAb = await vocalsFile.arrayBuffer(); const bAb = await backingFile.arrayBuffer(); tracks.vocals = await makeMediaTrackFromArrayBuffer(vAb, vocalsFile.name); tracks.backing = await makeMediaTrackFromArrayBuffer(bAb, backingFile.name);
+  filenameEl.textContent = `${tracks.vocals.fileName} / ${tracks.backing.fileName}`; statusEl.textContent='ファイル読み込み完了'; log('tracks set', {vocals:tracks.vocals.fileName, backing:tracks.backing.fileName}); playBtn.disabled=false; stopBtn.disabled=false;
+});
 
-// seeking
+function getCurrentTime(){ try{ if(tracks.vocals?.el && tracks.backing?.el) return Math.min(tracks.vocals.el.currentTime || 0, tracks.backing.el.currentTime || 0); if(tracks.vocals?.el) return tracks.vocals.el.currentTime || 0; if(tracks.backing?.el) return tracks.backing.el.currentTime || 0; return 0; }catch(e){ return 0; } }
+
 seek.addEventListener('input', ()=>{ lastSeekSetByUser = true; const t = Number(seek.value); currentEl.textContent = fmt(t); });
 seek.addEventListener('change', ()=>{ const t = Number(seek.value); if(tracks.vocals?.el) try{ tracks.vocals.el.currentTime = t; }catch(e){ log('seek vocals failed', e); } if(tracks.backing?.el) try{ tracks.backing.el.currentTime = t; }catch(e){ log('seek backing failed', e); } lastSeekSetByUser = false; });
 
-// playback using media elements (preferred for stability)
+// playback: ensure media elements are attached and await canplay
 async function startPlayback(){ if(!tracks.vocals || !tracks.backing) return alert('ファイルを読み込んでください'); ensureAudioCtx(); if(audioCtx.state === 'suspended'){ try{ await audioCtx.resume(); log('audioCtx resumed'); }catch(e){ log('resume failed', e); } }
-  // connect media elements to audio graph
+  // connect media elements to WebAudio graph (do this before play)
   for(const role of ['vocals','backing']){
-    const t = tracks[role]; if(!t) continue; if(!t.el && t.blobUrl){ t.el = new Audio(t.blobUrl); t.el.preload='auto'; }
-    try{ if(!t.node){ t.node = audioCtx.createMediaElementSource(t.el); t.node.connect(role==='vocals'?gainV:gainB); } }catch(e){ log('createMediaElementSource failed', role, e); }
+    const t = tracks[role]; if(!t || !t.el) continue;
+    try{ if(!t.node){ t.node = audioCtx.createMediaElementSource(t.el); t.node.connect(role==='vocals'?gainV:gainB); log('created mediaElementSource', role); } }catch(e){ log('createMediaElementSource failed', role, e); }
+    // ensure canplay before play
+    if(t.el.readyState < 3){ await new Promise(resolve=>{ const onCan = ()=>{ t.el.removeEventListener('canplay', onCan); resolve(); }; t.el.addEventListener('canplay', onCan); // also timeout
+      setTimeout(resolve, 2000);
+    }); }
   }
 
-  // sync start by setting same currentTime
+  // sync start: set same currentTime
   const t0 = Number(seek.value) || 0; if(tracks.vocals.el) tracks.vocals.el.currentTime = t0; if(tracks.backing.el) tracks.backing.el.currentTime = t0;
-
   updateControlsFromSliders();
 
-  // start playback (user gesture)
   const promises = [];
-  if(tracks.vocals.el) promises.push(tracks.vocals.el.play().catch(e=>log('vocals.play failed', e)));
-  if(tracks.backing.el) promises.push(tracks.backing.el.play().catch(e=>log('backing.play failed', e)));
-  await Promise.all(promises);
+  if(tracks.vocals.el) promises.push(tracks.vocals.el.play().catch(e=>{ log('vocals.play failed', e.name, e.message); return e; }));
+  if(tracks.backing.el) promises.push(tracks.backing.el.play().catch(e=>{ log('backing.play failed', e.name, e.message); return e; }));
+  const res = await Promise.all(promises);
+  log('play results', res);
   isPlaying = true; playBtn.textContent='停止'; stopBtn.disabled=false; statusEl.textContent='再生中 (media)'; log('media playback started'); }
 
-function stopPlayback(){ for(const r of ['vocals','backing']){ const t = tracks[r]; if(t?.el){ try{ t.el.pause(); }catch(e){ log('pause err', e); } } } isPlaying=false; playBtn.textContent='再生'; statusEl.textContent='停止中'; log('stopped'); }
+function stopPlayback(){ for(const role of ['vocals','backing']){ const t = tracks[role]; if(t?.el) try{ t.el.pause(); }catch(e){ log('pause err', e); } } isPlaying=false; playBtn.textContent='再生'; statusEl.textContent='停止中'; log('stopped'); }
 
 playBtn.addEventListener('click', ()=>{ if(isPlaying) stopPlayback(); else startPlayback(); });
 stopBtn.addEventListener('click', ()=> stopPlayback());
@@ -165,11 +183,8 @@ vocalsGainSlider.addEventListener('input', updateControlsFromSliders);
 backingGainSlider.addEventListener('input', updateControlsFromSliders);
 masterSlider.addEventListener('input', updateControlsFromSliders);
 
-// persist across visibility changes (keep blob URLs and recreate elements)
-document.addEventListener('visibilitychange', ()=>{ log('visibility changed', document.visibilityState); if(document.visibilityState === 'hidden'){ if(isPlaying) stopPlayback(); }else{ for(const role of ['vocals','backing']){ const t = tracks[role]; if(!t) continue; if(!t.el && t.blobUrl){ t.el = new Audio(t.blobUrl); t.el.preload='auto'; } if(t.el){ t.el.addEventListener('loadedmetadata', ()=>{ try{ const dur = Math.min((tracks.vocals.el && tracks.vocals.el.duration) || Infinity, (tracks.backing.el && tracks.backing.el.duration) || Infinity); if(isFinite(dur)){ seek.max = dur; totalEl.textContent = fmt(dur); } }catch(e){} }); t.el.addEventListener('timeupdate', ()=>{ if(!lastSeekSetByUser){ const cur = getCurrentTime(); seek.value = cur; currentEl.textContent = fmt(cur); } }); } } statusEl.textContent='復帰しました。再生ボタンで続行してください'; } });
-
-// seek update while playing
-setInterval(()=>{ if(isPlaying && !lastSeekSetByUser){ const cur=getCurrentTime(); seek.value = cur; currentEl.textContent = fmt(cur); } }, 200);
+// persist across visibility changes: keep blob URLs in DOM
+document.addEventListener('visibilitychange', ()=>{ log('visibility changed', document.visibilityState); if(document.visibilityState==='hidden'){ if(isPlaying) stopPlayback(); }else{ for(const role of ['vocals','backing']){ const t = tracks[role]; if(!t) continue; if(!t.el && t.blobUrl){ t.el = document.createElement('audio'); t.el.src = t.blobUrl; t.el.preload='auto'; t.el.playsInline=true; t.el.style.display='none'; audioPool.appendChild(t.el); } } statusEl.textContent='復帰しました。再生ボタンで続行してください'; } });
 
 // visualizer
 let freq = new Uint8Array(512);
@@ -178,7 +193,6 @@ function resize(){ canvas.width=canvas.clientWidth; canvas.height=canvas.clientH
 window.addEventListener('resize', resize); resize(); draw();
 
 log('Supported types:', { wav: Audio.prototype.canPlayType && Audio.prototype.canPlayType('audio/wav'), mp3: Audio.prototype.canPlayType && Audio.prototype.canPlayType('audio/mpeg'), m4a: Audio.prototype.canPlayType && Audio.prototype.canPlayType('audio/x-m4a') });
-
 </script>
 </body>
 </html>
