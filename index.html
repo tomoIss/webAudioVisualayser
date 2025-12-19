@@ -3,105 +3,111 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Demucs Player — Seek 継続 + 背景復帰対応</title>
+<title>Demucs Player — 完全版</title>
 
 <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
 
 <style>
-/* ---------- 既存UI（変更なし） ---------- */
+/* ---- 基本UI ---- */
 body{background:#0f1115;color:#eaeaf0;margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto}
-main{max-width:900px;margin:18px auto;padding:14px}
+main{max-width:960px;margin:18px auto;padding:14px}
 .top{display:grid;grid-template-columns:90px 1fr 90px;gap:16px;align-items:center}
 canvas{width:100%;height:300px;background:#0b0d12;border-radius:12px;display:block}
 .btn{background:linear-gradient(90deg,#38bdf8,#4ade80);color:#012;border:none;padding:8px 12px;border-radius:8px;font-weight:700;cursor:pointer}
 .small{font-size:13px;color:#b8cbe0}
 .log{background:#071018;color:#9fbfd6;font-size:.85rem;border-radius:8px;padding:8px;max-height:160px;overflow:auto;white-space:pre-wrap}
+
+/* 縦スライダー（デフォルト） */
 .v-slider{display:flex;flex-direction:column;align-items:center;height:180px}
 .v-label{font-size:13px;color:#b8cbe0;margin-bottom:12px}
 .slider-vert{width:150px;height:22px;transform:rotate(-90deg);margin-top:28px}
 
-/* レスポンシブ（縦画面で横スライダー） — 既存挙動維持 */
-@media (orientation: portrait) {
-  .top { grid-template-columns:1fr; grid-auto-rows:auto; gap:10px; }
-  #viz { order: 1; }
-  .v-slider { order: 2; flex-direction: row; justify-content: space-between; align-items:center; height:auto; padding:8px 6px; }
-  .v-slider + .v-slider { margin-top:6px; }
-  .v-label { margin-bottom:0; margin-right:8px; font-size:12px; width:58px; text-align:left; }
-  .slider-vert { transform: none; width:48%; margin-top:0; height:22px; }
+/* レスポンシブ: 縦画面・小幅でスライダーを横にしてcanvas下へ */
+@media (orientation: portrait), (max-width:760px) {
+  .top{grid-template-columns:1fr;grid-auto-rows:auto;gap:10px}
+  .v-slider{flex-direction:row;justify-content:space-between;align-items:center;height:auto;padding:8px 6px}
+  .v-label{margin-bottom:0;margin-right:8px;font-size:12px;width:58px;text-align:left}
+  .slider-vert{transform:none;width:48%;margin-top:0;height:22px}
   main{padding:12px}
-}
-@media (max-width:760px) {
-  .top { grid-template-columns:1fr; gap:10px; }
-  .v-slider{ display:flex; flex-direction:row; justify-content:space-between; align-items:center; height:auto; padding:8px 6px; }
-  .v-label{ margin-bottom:0; margin-right:8px; font-size:12px; width:58px; text-align:left; }
-  .slider-vert{ transform:none; width:48%; margin-top:0; height:22px; }
-  main{padding:10px}
 }
 </style>
 </head>
 <body>
 <main>
-  <h2>Demucs Player</h2>
+  <h2 style="margin:0 0 8px 0">Demucs Player</h2>
 
-  <div style="display:flex;gap:8px;margin-bottom:10px">
-    <label class="btn" for="zipInput">ZIP読込</label>
-    <label class="btn" for="filesInput">2ファイル（vocals / backing）</label>
-    <button class="btn" id="playBtn" disabled>再生</button>
-    <button class="btn" id="stopBtn" disabled>停止</button>
+  <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
+    <label id="zipLabel" for="zipInput" class="btn">ZIPを読み込む</label>
+    <label id="filesLabel" for="filesInput" class="btn">2ファイル選択</label>
+    <button id="playBtn" class="btn" disabled>再生</button>
+    <button id="stopBtn" class="btn" disabled>停止</button>
   </div>
 
   <div class="top">
     <div class="v-slider" id="vslider-v">
       <div class="v-label">Vocals</div>
-      <input id="volV" type="range" min="0" max="1" step="0.01" value="1" class="slider-vert">
+      <input id="volV" class="slider-vert" type="range" min="0" max="1" step="0.01" value="1">
     </div>
 
     <canvas id="viz" aria-hidden="true"></canvas>
 
     <div class="v-slider" id="vslider-b">
       <div class="v-label">Backing</div>
-      <input id="volB" type="range" min="0" max="1" step="0.01" value="1" class="slider-vert">
+      <input id="volB" class="slider-vert" type="range" min="0" max="1" step="0.01" value="1">
     </div>
   </div>
 
   <div style="margin-top:14px">
     <input id="seek" type="range" min="0" max="1" step="0.01" value="0" style="width:100%">
-    <div style="display:flex;justify-content:space-between">
+    <div style="display:flex;justify-content:space-between;margin-top:6px">
       <small id="cur">0:00</small>
       <small id="total">0:00</small>
     </div>
 
     <div style="display:flex;align-items:center;gap:8px;margin-top:8px">
-      <span class="small">Master</span>
+      <div class="small">Master</div>
       <input id="master" type="range" min="0" max="1" step="0.01" value="1" style="flex:1">
-      <span id="filename" class="small">未選択</span>
+      <div id="filename" class="small" style="width:220px;text-align:right">未選択</div>
     </div>
 
-    <pre id="log" class="log">ready</pre>
+    <pre id="log" class="log">ready
+</pre>
   </div>
 </main>
 
 <input id="zipInput" type="file" accept=".zip" hidden>
-<input id="filesInput" type="file" multiple accept=".wav,.mp3,.m4a,.aac,.ogg" hidden>
+<input id="filesInput" type="file" accept=".wav,.mp3,.m4a,.aac,.ogg" multiple hidden>
 
 <script>
-/* ---------- util ---------- */
+/* ---------- ユーティリティ ---------- */
 const logEl = document.getElementById('log');
-const log = (...a) => { logEl.textContent += a.join(' ') + '\n'; logEl.scrollTop = 1e9; };
-const fmtTime = s => !isFinite(s) ? '0:00' : `${Math.floor(s/60)}:${String(Math.floor(s)%60).padStart(2,'0')}`;
+function log(...a){ try{ logEl.textContent += a.join(' ') + '\\n'; logEl.scrollTop = 1e9; }catch(e){} }
 
-/* ---------- Audio state ---------- */
-let audioCtx = null, analyser = null, masterGain = null, gainV = null, gainB = null;
-let tracks = { vocals: null, backing: null }; // { mode:'buffer'|'media', buffer, el, fileName }
-let audioElements = [];
-let bufferSources = { vocals: null, backing: null };
-let isPlaying = false, pausedOffset = 0;
+/* DOM refs */
+const zipInput = document.getElementById('zipInput');
+const filesInput = document.getElementById('filesInput');
+const playBtn = document.getElementById('playBtn');
+const stopBtn = document.getElementById('stopBtn');
+const seek = document.getElementById('seek');
+const curEl = document.getElementById('cur');
+const totalEl = document.getElementById('total');
+const volV = document.getElementById('volV');
+const volB = document.getElementById('volB');
+const master = document.getElementById('master');
+const filenameEl = document.getElementById('filename');
 
-/* --- resume-after-visibility flag --- */
+/* ---------- Audio 状態 ---------- */
+let audioCtx = null;
+let analyser = null;
+let masterGain = null, gainV = null, gainB = null;
+let tracks = { vocals: null, backing: null }; // { mode:'buffer'|'media', buffer, el, node, fileName }
+let bufferSources = { vocals: null, backing: null }; // { node, offset, startedAt }
+let isPlaying = false;
+let pausedOffset = 0;
 let resumeAfterVisible = false;
 
-/* --- AudioContext & nodes --- */
+/* ---------- AudioContext 作成 ---------- */
 function ensureAudio(){
   if(audioCtx) return;
   audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -112,72 +118,87 @@ function ensureAudio(){
   masterGain = audioCtx.createGain();
   gainV = audioCtx.createGain();
   gainB = audioCtx.createGain();
-  // init gains from DOM so sliders consistent even before ctx created
-  gainV.gain.value = Number(document.getElementById('volV').value || 1);
-  gainB.gain.value = Number(document.getElementById('volB').value || 1);
-  masterGain.gain.value = Number(document.getElementById('master').value || 1);
-  gainV.connect(masterGain); gainB.connect(masterGain);
-  masterGain.connect(analyser); analyser.connect(audioCtx.destination);
+  // 初期値をDOMから取得（ctx作られる前のスライダー状態と一致させる）
+  gainV.gain.value = Number(volV.value || 1);
+  gainB.gain.value = Number(volB.value || 1);
+  masterGain.gain.value = Number(master.value || 1);
+  gainV.connect(masterGain);
+  gainB.connect(masterGain);
+  masterGain.connect(analyser);
+  analyser.connect(audioCtx.destination);
   log('AudioContext created (state=' + audioCtx.state + ')');
 }
 
-/* --- decode helper --- */
+/* ---------- デコードヘルパ ---------- */
 async function tryDecode(arrayBuffer){
   try{
     ensureAudio();
-    return await new Promise((res,rej)=> audioCtx.decodeAudioData(arrayBuffer.slice(0), res, rej));
+    return await new Promise((res, rej) => audioCtx.decodeAudioData(arrayBuffer.slice(0), res, rej));
   }catch(e){
-    log('decode failed', e && e.message ? e.message : e);
+    log('decodeAudioData failed', e && e.message ? e.message : e);
     return null;
   }
 }
 
-/* --- create <audio> element fallback --- */
+/* ---------- create media element fallback ---------- */
 function createMediaFromBlob(blob, name){
   const url = URL.createObjectURL(blob);
   const el = new Audio(url);
   el.preload = 'auto';
-  el.playsInline = true;
   el.setAttribute('playsinline','');
+  el.playsInline = true;
   el.style.display = 'none';
   document.body.appendChild(el);
-  audioElements.push(el);
+  audioElementsKeeper.push(el);
   el.addEventListener('loadedmetadata', ()=>{
     log('loadedmetadata', name, el.duration);
+    try{ const d = calcDuration(); if(isFinite(d)){ seek.max = d; totalEl.textContent = fmt(d); } }catch(e){}
+  });
+  // timeupdate updating seek when media-only used
+  el.addEventListener('timeupdate', ()=> {
+    if(!isPlaying) return;
+    // keep seek synced when both media or single media playing
     try{
-      const d = calcDuration();
-      if(isFinite(d)){ seek.max = d; total.textContent = fmtTime(d); }
+      const t = getCurrentTime();
+      if(!isNaN(t) && !isFinite(t) === false){} // noop just safe
     }catch(e){}
   });
   return { mode:'media', el, blobUrl:url, fileName:name };
 }
+const audioElementsKeeper = []; // keep references to audio elements to avoid GC
 
-/* --- helpers --- */
+/* ---------- 小ヘルパ ---------- */
+function fmt(sec){ if(!isFinite(sec)) return '0:00'; sec = Math.max(0, Math.floor(sec)); const m = Math.floor(sec/60); const s = sec%60; return `${m}:${s.toString().padStart(2,'0')}`; }
+
 function calcDuration(){
-  if(tracks.vocals?.mode==='buffer' && tracks.backing?.mode==='buffer'){
+  if(tracks.vocals?.mode === 'buffer' && tracks.backing?.mode === 'buffer'){
     return Math.min(tracks.vocals.buffer.duration, tracks.backing.buffer.duration);
   }
-  if(tracks.vocals?.mode==='media' && tracks.backing?.mode==='media' && tracks.vocals.el.duration && tracks.backing.el.duration){
+  if(tracks.vocals?.mode === 'media' && tracks.backing?.mode === 'media' && tracks.vocals.el.duration && tracks.backing.el.duration){
     return Math.min(tracks.vocals.el.duration, tracks.backing.el.duration);
   }
-  if(tracks.vocals?.mode==='buffer' && tracks.backing?.mode==='media' && tracks.backing.el.duration){
+  if(tracks.vocals?.mode === 'buffer' && tracks.backing?.mode === 'media' && tracks.backing.el.duration){
     return Math.min(tracks.vocals.buffer.duration, tracks.backing.el.duration);
   }
-  if(tracks.vocals?.mode==='media' && tracks.backing?.mode==='buffer' && tracks.vocals.el.duration){
+  if(tracks.vocals?.mode === 'media' && tracks.backing?.mode === 'buffer' && tracks.vocals.el.duration){
     return Math.min(tracks.vocals.el.duration, tracks.backing.buffer.duration);
   }
   return Infinity;
 }
 
-/* ---------- File inputs (ZIP & files) ---------- */
+/* ---------- ファイル読み込み（ZIP & ファイル） ---------- */
+/* ZIP ラベルクリック補助 */
+document.getElementById('zipLabel').addEventListener('click', ()=>{ try{ zipInput.click(); }catch(e){} });
+document.getElementById('filesLabel').addEventListener('click', ()=>{ try{ filesInput.click(); }catch(e){} });
+
 zipInput.addEventListener('change', async ()=>{
-  const f = zipInput.files[0]; zipInput.value='';
+  const f = zipInput.files[0]; zipInput.value = '';
   if(!f) return;
   log('ZIP select', f.name);
   try{
     const zip = await JSZip.loadAsync(f);
-    const names = Object.keys(zip.files).filter(n=>!zip.files[n].dir && /\.(wav|mp3|m4a|aac|ogg)$/i.test(n));
-    if(names.length < 2){ alert('zipに音声ファイルが2つ以上必要です'); return; }
+    const names = Object.keys(zip.files).filter(n => !zip.files[n].dir && /\.(wav|mp3|m4a|aac|ogg)$/i.test(n));
+    if(names.length < 2){ alert('ZIP に音声ファイルが2つ以上必要です'); return; }
     const vName = names.find(n=>/vocals?/i.test(n)) || names[0];
     const bName = names.find(n=>/(inst|back|no[_-]?vocals?)/i.test(n) && n!==vName) || names.find(n=>n!==vName) || names[1];
     log('selected entries', vName, bName);
@@ -192,61 +213,71 @@ zipInput.addEventListener('change', async ()=>{
       tracks.vocals = createMediaFromBlob(new Blob([vAB]), vName);
       tracks.backing = createMediaFromBlob(new Blob([bAB]), bName);
     }
-    filename.textContent = `${tracks.vocals.fileName} / ${tracks.backing.fileName}`;
-    const d = calcDuration(); if(isFinite(d)){ seek.max = d; total.textContent = fmtTime(d); }
+    filenameEl.textContent = `${tracks.vocals.fileName} / ${tracks.backing.fileName}`;
+    const d = calcDuration(); if(isFinite(d)){ seek.max = d; totalEl.textContent = fmt(d); }
     playBtn.disabled = stopBtn.disabled = false;
     log('tracks set', {vocals:tracks.vocals.fileName, backing:tracks.backing.fileName, modes:[tracks.vocals.mode, tracks.backing.mode]});
   }catch(e){
     console.error(e);
-    log('zip read failed', e && e.message ? e.message : e);
-    alert('ZIP 読み込みに失敗しました');
+    log('ZIP 読み込み失敗', e && e.message ? e.message : e);
+    alert('ZIP の読み込みに失敗しました');
   }
 });
 
 filesInput.addEventListener('change', async ()=>{
-  const files = Array.from(filesInput.files); filesInput.value='';
+  const files = Array.from(filesInput.files); filesInput.value = '';
   if(files.length < 2){ alert('2ファイル選択してください'); return; }
   const vocalsFile = files.find(f=>/vocals/i.test(f.name)) || files[0];
   const backingFile = files.find(f=>/(no_vocals|no-vocals|back|inst|instrumental)/i.test(f.name)) || files[1];
   log('files select', vocalsFile.name, backingFile.name);
-  const vAb = await vocalsFile.arrayBuffer(); const bAb = await backingFile.arrayBuffer();
-  const bufV = await tryDecode(vAb); const bufB = await tryDecode(bAb);
-  if(bufV && bufB){
-    tracks.vocals = { mode:'buffer', buffer:bufV, fileName:vocalsFile.name };
-    tracks.backing = { mode:'buffer', buffer:bufB, fileName:backingFile.name };
-  }else{
-    tracks.vocals = createMediaFromBlob(new Blob([vAb]), vocalsFile.name);
-    tracks.backing = createMediaFromBlob(new Blob([bAb]), backingFile.name);
+  try{
+    const vAb = await vocalsFile.arrayBuffer();
+    const bAb = await backingFile.arrayBuffer();
+    const bufV = await tryDecode(vAb);
+    const bufB = await tryDecode(bAb);
+    if(bufV && bufB){
+      tracks.vocals = { mode:'buffer', buffer:bufV, fileName:vocalsFile.name };
+      tracks.backing = { mode:'buffer', buffer:bufB, fileName:backingFile.name };
+    }else{
+      tracks.vocals = createMediaFromBlob(new Blob([vAb]), vocalsFile.name);
+      tracks.backing = createMediaFromBlob(new Blob([bAb]), backingFile.name);
+    }
+    filenameEl.textContent = `${tracks.vocals.fileName} / ${tracks.backing.fileName}`;
+    const d = calcDuration(); if(isFinite(d)){ seek.max = d; totalEl.textContent = fmt(d); }
+    playBtn.disabled = stopBtn.disabled = false;
+    log('tracks set', {vocals:tracks.vocals.fileName, backing:tracks.backing.fileName});
+  }catch(e){
+    log('files load error', e && e.message ? e.message : e);
+    alert('ファイル読み込みでエラーが発生しました');
   }
-  filename.textContent = `${tracks.vocals.fileName} / ${tracks.backing.fileName}`;
-  const d = calcDuration(); if(isFinite(d)){ seek.max = d; total.textContent = fmtTime(d); }
-  playBtn.disabled = stopBtn.disabled = false; log('tracks set', {vocals:tracks.vocals.fileName, backing:tracks.backing.fileName});
 });
 
-/* ---------- Buffer helpers ---------- */
+/* ---------- Buffer 再生関連 ---------- */
 function stopBufferSource(role){
   const s = bufferSources[role];
   if(s && s.node){
-    try{ s.node.stop(); }catch(e){}
+    try{ s.node.stop(); }catch(e){/*ignore*/ }
   }
   bufferSources[role] = null;
 }
+
 function startBufferSource(role, offsetSec){
   if(!audioCtx) ensureAudio();
+  stopBufferSource(role);
   const now = audioCtx.currentTime;
-  const s = audioCtx.createBufferSource();
-  s.buffer = tracks[role].buffer;
-  s.connect(role==='vocals'?gainV:gainB);
-  s.loop = false;
-  s.start(now, offsetSec);
-  bufferSources[role] = { node:s, offset:offsetSec, startedAt: now };
-  s.onended = ()=>{ if(!s.loop) stopAll(); };
+  const src = audioCtx.createBufferSource();
+  src.buffer = tracks[role].buffer;
+  src.connect(role === 'vocals' ? gainV : gainB);
+  src.loop = false;
+  src.start(now, offsetSec);
+  bufferSources[role] = { node: src, offset: offsetSec, startedAt: now };
+  src.onended = ()=>{ if(!src.loop) { /* if both ended, stopAll will set play state */ } };
 }
 
-/* start/stop both buffers (used by startAll or seekWhilePlaying) */
 function stopBufferPlayback(){
-  ['vocals','backing'].forEach(k=>{ const s = bufferSources[k]; if(s && s.node){ try{ s.node.stop(); }catch(e){} } bufferSources[k]=null; });
+  ['vocals','backing'].forEach(k=>{ stopBufferSource(k); });
 }
+
 function startBufferPlayback(offsetSec){
   if(!audioCtx) ensureAudio();
   stopBufferPlayback();
@@ -258,42 +289,44 @@ function startBufferPlayback(offsetSec){
   sB.start(now, offsetSec);
   bufferSources.vocals = { node: sV, offset: offsetSec, startedAt: now };
   bufferSources.backing = { node: sB, offset: offsetSec, startedAt: now };
-  sV.onended = ()=>{ if(!sV.loop) stopAll(); };
-  // ensure playing state set
+  sV.onended = ()=>{ if(!sV.loop) { stopAll(); } };
+  // set playing state
   isPlaying = true; playBtn.textContent = '停止';
 }
 
-/* --- Media node connect --- */
+/* ---------- MediaElementSource 接続ヘルパ ---------- */
 function ensureMediaNode(role){
   const t = tracks[role];
   if(!t || t.mode !== 'media' || !t.el) return;
   try{
     if(!audioCtx) ensureAudio();
-    if(!t.node){
-      t.node = audioCtx.createMediaElementSource(t.el);
-    }else{
+    // disconnect existing node (some browsers require re-create after background)
+    if(t.node){
       try{ t.node.disconnect(); }catch(e){}
+      t.node = null;
     }
-    t.node.connect(role==='vocals'?gainV:gainB);
-    try{ gainV.connect(masterGain); gainB.connect(masterGain); masterGain.connect(analyser); analyser.connect(audioCtx.destination); }catch(e){}
+    t.node = audioCtx.createMediaElementSource(t.el);
+    t.node.connect(role==='vocals' ? gainV : gainB);
     log('media node connected', role);
   }catch(e){
     log('createMediaElementSource failed for', role, e && e.message ? e.message : e);
   }
 }
 
-/* ---------- Start / Stop (既存) ---------- */
+/* ---------- 開始 / 停止 ---------- */
 async function startAll(){
-  if(!tracks.vocals || !tracks.backing) return alert('ファイルを読み込んでください');
+  if(!tracks.vocals || !tracks.backing){ alert('ファイルを読み込んでください'); return; }
   ensureAudio();
-  if(audioCtx.state === 'suspended'){ try{ await audioCtx.resume(); log('audioCtx resumed'); }catch(e){ log('resume failed', e); } }
+  try{ if(audioCtx.state === 'suspended') await audioCtx.resume(); }catch(e){ log('resume error', e && e.message ? e.message : e); }
+  // update gain values
   try{ gainV.gain.value = Number(volV.value); gainB.gain.value = Number(volB.value); masterGain.gain.value = Number(master.value); }catch(e){}
   if(tracks.vocals.mode === 'buffer' && tracks.backing.mode === 'buffer'){
     const offset = Number(seek.value) || 0;
     startBufferPlayback(offset);
-    isPlaying = true; playBtn.textContent='停止'; log('started buffer at', offset);
+    isPlaying = true; playBtn.textContent = '停止'; log('started buffer at', offset);
     return;
   }
+  // media path
   for(const role of ['vocals','backing']){
     const t = tracks[role];
     if(t?.mode === 'media' && t.el){
@@ -311,69 +344,69 @@ async function startAll(){
   const promises = [];
   if(tracks.vocals.mode === 'media' && tracks.vocals.el) promises.push(tracks.vocals.el.play().catch(e=>{ log('vocals.play fail', e && e.name); return e; }));
   if(tracks.backing.mode === 'media' && tracks.backing.el) promises.push(tracks.backing.el.play().catch(e=>{ log('backing.play fail', e && e.name); return e; }));
-  const res = await Promise.all(promises);
-  log('media play results', res);
-  isPlaying = true; playBtn.textContent='停止';
+  await Promise.all(promises);
+  isPlaying = true; playBtn.textContent = '停止';
+  log('media play results');
 }
 
 function stopAll(){
+  // buffers: remember position then stop
   if(tracks.vocals?.mode === 'buffer' || tracks.backing?.mode === 'buffer'){
     try{ pausedOffset = getBufferCurrent(); }catch(e){ pausedOffset = Number(seek.value) || 0; }
     stopBufferPlayback();
   }
+  // media: pause elements
   ['vocals','backing'].forEach(role=>{
     const t = tracks[role];
     if(t?.mode === 'media' && t.el){
-      try{ t.el.pause(); }catch(e){ log('pause failed', e); }
+      try{ t.el.pause(); }catch(e){ log('pause failed', e && e.message ? e.message : e); }
     }
   });
-  isPlaying = false; playBtn.textContent='再生';
+  isPlaying = false;
+  playBtn.textContent = '再生';
 }
 
-/* ---------- Current time helpers ---------- */
+/* ---------- 再生位置取得 ---------- */
 function getBufferCurrent(){
+  // assume vocals buffer source tracks.vocals exists
   const a = bufferSources.vocals;
   if(a && a.startedAt) return a.offset + (audioCtx.currentTime - a.startedAt);
   return pausedOffset || Number(seek.value) || 0;
 }
+
 function getCurrentTime(){
   try{
-    if(tracks.vocals?.mode==='buffer' || tracks.backing?.mode==='buffer'){
-      return getBufferCurrent();
-    }
-    if(tracks.vocals?.mode==='media' && tracks.backing?.mode==='media' && tracks.vocals.el && tracks.backing.el){
+    if(tracks.vocals?.mode === 'buffer' || tracks.backing?.mode === 'buffer') return getBufferCurrent();
+    if(tracks.vocals?.mode === 'media' && tracks.backing?.mode === 'media' && tracks.vocals.el && tracks.backing.el){
       return Math.min(tracks.vocals.el.currentTime || 0, tracks.backing.el.currentTime || 0);
     }
-    if(tracks.vocals?.mode==='media' && tracks.vocals.el) return tracks.vocals.el.currentTime || 0;
-    if(tracks.backing?.mode==='media' && tracks.backing.el) return tracks.backing.el.currentTime || 0;
+    if(tracks.vocals?.mode === 'media' && tracks.vocals.el) return tracks.vocals.el.currentTime || 0;
+    if(tracks.backing?.mode === 'media' && tracks.backing.el) return tracks.backing.el.currentTime || 0;
     return 0;
   }catch(e){ return 0; }
 }
 
-/* ---------- Seek while playing: 継続再生仕様（強化） ---------- */
+/* ---------- シーク中に再生継続（最重要） ---------- */
 async function seekWhilePlaying(time){
   if(!tracks.vocals || !tracks.backing) return;
   ensureAudio();
-  if(audioCtx.state === 'suspended'){ try{ await audioCtx.resume(); }catch(e){} }
-
-  // both buffers -> restart both synchronously
+  try{ if(audioCtx.state === 'suspended') await audioCtx.resume(); }catch(e){ log('resume failed', e && e.message ? e.message : e); }
+  // both buffers -> restart both synchronized
   if(tracks.vocals.mode === 'buffer' && tracks.backing.mode === 'buffer'){
     startBufferPlayback(Number(time) || 0);
     return;
   }
-
-  // mixed / media cases
-  // 1) set media currentTime
+  // mixed/media: set media currentTime then restart buffer ones
   const mediaPromises = [];
   for(const role of ['vocals','backing']){
     const t = tracks[role];
     if(t?.mode === 'media' && t.el){
       try{ t.el.currentTime = Number(time) || 0; }catch(e){ log('set currentTime failed', role, e && e.message ? e.message : e); }
-      // ensure media will play
-      mediaPromises.push(t.el.play().catch(e=>{ log('media play fail during seek', role, e && e.name); return e; }));
+      // attempt to play (may be already playing)
+      mediaPromises.push(t.el.play().catch(e=>{ log('media play during seek failed', role, e && e.name); return e; }));
     }
   }
-  // 2) restart any buffer sources to new offset
+  // restart buffer sources individually (so they align with media)
   for(const role of ['vocals','backing']){
     const t = tracks[role];
     if(t?.mode === 'buffer'){
@@ -381,23 +414,11 @@ async function seekWhilePlaying(time){
       startBufferSource(role, Number(time) || 0);
     }
   }
-  // wait for media play attempts (non-blocking, but helpful)
   try{ await Promise.all(mediaPromises); }catch(e){}
-  // ensure UI state
   isPlaying = true; playBtn.textContent = '停止';
 }
 
-/* ---------- UI wiring (seek 改良) ---------- */
-const playBtn = document.getElementById('playBtn');
-const stopBtn = document.getElementById('stopBtn');
-const seek = document.getElementById('seek');
-const cur = document.getElementById('cur');
-const total = document.getElementById('total');
-const volV = document.getElementById('volV');
-const volB = document.getElementById('volB');
-const master = document.getElementById('master');
-const filename = document.getElementById('filename');
-
+/* ---------- UI wiring ---------- */
 playBtn.addEventListener('click', ()=>{ if(isPlaying) stopAll(); else startAll(); });
 stopBtn.addEventListener('click', ()=> stopAll());
 
@@ -405,13 +426,22 @@ let lastSeekByUser = false;
 seek.addEventListener('input', async ()=>{
   lastSeekByUser = true;
   const v = Number(seek.value);
-  cur.textContent = fmtTime(v);
+  curEl.textContent = fmt(v);
   if(isPlaying){
-    // seek and continue playing without pressing play
+    // 再生中：停止せずに即再生継続（seekWhilePlaying）
+    pausedOffset = v;
     await seekWhilePlaying(v);
   }else{
-    // stopped: update paused offset
+    // 停止中：位置だけ更新。メディアがある場合は currentTime 反映（再生は開始しない）
     pausedOffset = v;
+    try{
+      for(const role of ['vocals','backing']){
+        const t = tracks[role];
+        if(t?.mode === 'media' && t.el){
+          try{ t.el.currentTime = v; }catch(e){}
+        }
+      }
+    }catch(e){}
   }
 });
 seek.addEventListener('change', ()=>{ lastSeekByUser = false; });
@@ -422,54 +452,80 @@ master.addEventListener('input', ()=>{ ensureAudio(); if(masterGain) masterGain.
 
 setInterval(()=>{
   if(isPlaying){
-    const c = getCurrentTime();
-    if(!lastSeekByUser){ seek.value = c; cur.textContent = fmtTime(c); }
+    try{
+      const c = getCurrentTime();
+      if(!lastSeekByUser){ seek.value = c; curEl.textContent = fmt(c); }
+    }catch(e){}
   }
 },200);
 
-/* ---------- Visibility / background handling ---------- */
-async function handleVisible() {
-  // when returning to visible, resume audioCtx and restart playback if needed
-  if(!resumeAfterVisible) return;
-  log('Returning visible — resuming playback at', pausedOffset);
-  try{
-    ensureAudio();
-    if(audioCtx.state === 'suspended') await audioCtx.resume();
-  }catch(e){ log('resume error', e && e.message ? e.message : e); }
-  // resume playback at pausedOffset
-  try{
-    // set seek UI
-    seek.value = pausedOffset;
-    cur.textContent = fmtTime(pausedOffset);
-    // use seekWhilePlaying to restart appropriate sources
-    await seekWhilePlaying(pausedOffset);
-  }catch(e){ log('resume playback failed', e && e.message ? e.message : e); }
-  resumeAfterVisible = false;
-}
-
-function handleHidden(){
+/* ---------- バックグラウンド復帰対応 ---------- */
+async function onBecomeHidden(){
   if(!isPlaying) return;
-  // store current position and stop playback so we can safely restart later
   try{ pausedOffset = getCurrentTime(); }catch(e){ pausedOffset = Number(seek.value) || 0; }
-  log('Hidden — saving position', pausedOffset, 'and stopping playback');
-  // we stop all but keep flag to restart on visible
+  log('becoming hidden, saving pos', pausedOffset);
   stopAll();
   resumeAfterVisible = true;
 }
 
-document.addEventListener('visibilitychange', ()=>{
-  if(document.hidden) handleHidden();
-  else handleVisible();
-});
+async function onBecomeVisible(){
+  if(!resumeAfterVisible) return;
+  resumeAfterVisible = false;
+  log('becoming visible, try resume at', pausedOffset);
+  if(!tracks.vocals || !tracks.backing) return;
+  ensureAudio();
+  try{ if(audioCtx.state === 'suspended') await audioCtx.resume(); }catch(e){}
+  // media nodes may need re-creation (Safari)
+  for(const role of ['vocals','backing']){
+    const t = tracks[role];
+    if(t?.mode === 'media' && t.el){
+      try{
+        if(t.node){
+          try{ t.node.disconnect(); }catch(e){}
+          t.node = null;
+        }
+        t.node = audioCtx.createMediaElementSource(t.el);
+        t.node.connect(role==='vocals'?gainV:gainB);
+      }catch(e){ log('recreate media node failed', role, e && e.message ? e.message : e); }
+    }
+  }
+  // set UI position
+  seek.value = pausedOffset;
+  curEl.textContent = fmt(pausedOffset);
+  // resume playback at pausedOffset
+  if(tracks.vocals.mode === 'buffer' && tracks.backing.mode === 'buffer'){
+    startBufferPlayback(pausedOffset);
+  } else {
+    // set media currentTime then play; restart any buffer sources
+    for(const role of ['vocals','backing']){
+      const t = tracks[role];
+      if(t?.mode === 'media' && t.el){
+        try{ t.el.currentTime = pausedOffset; }catch(e){}
+      }
+    }
+    const promises = [];
+    if(tracks.vocals.mode === 'media' && tracks.vocals.el) promises.push(tracks.vocals.el.play().catch(()=>{}));
+    if(tracks.backing.mode === 'media' && tracks.backing.el) promises.push(tracks.backing.el.play().catch(()=>{}));
+    // restart buffers if present
+    for(const role of ['vocals','backing']){
+      if(tracks[role]?.mode === 'buffer'){
+        stopBufferSource(role);
+        startBufferSource(role, pausedOffset);
+      }
+    }
+    try{ await Promise.all(promises); }catch(e){}
+    isPlaying = true; playBtn.textContent = '停止';
+  }
+}
 
-// pagehide/pageshow for mobile browsers (iOS)
-window.addEventListener('pagehide', ()=>{ if(document.hidden) handleHidden(); });
-window.addEventListener('pageshow', ()=>{ if(!document.hidden) handleVisible(); });
+/* visibility/page events */
+document.addEventListener('visibilitychange', ()=>{ if(document.hidden) onBecomeHidden(); else onBecomeVisible(); });
+window.addEventListener('pagehide', ()=>{ if(document.hidden) onBecomeHidden(); });
+window.addEventListener('pageshow', ()=>{ if(!document.hidden) onBecomeVisible(); });
 
-/* ---------- visualizer（そのまま） ---------- */
+/* ---------- Visualizer（周波数ラベル + dB 表示） ---------- */
 const canvas = document.getElementById('viz');
 const canvasCtx = canvas.getContext('2d');
-
 function resizeCanvas(){
   const ratio = window.devicePixelRatio || 1;
   canvas.width = Math.floor(canvas.clientWidth * ratio);
@@ -500,16 +556,17 @@ function drawViz(){
     const rms = Math.sqrt(sum / timeDomain.length) || 0.000001;
     const dbfs = 20 * Math.log10(rms);
     const dBTop = analyser.maxDecibels, dBBottom = analyser.minDecibels, dBRange = dBTop - dBBottom;
-    canvasCtx.font='11px monospace'; canvasCtx.textAlign='right'; canvasCtx.textBaseline='middle';
+    canvasCtx.font = '11px monospace'; canvasCtx.textAlign = 'right'; canvasCtx.textBaseline = 'middle';
     const usableH = ch - topMargin - bottomMargin;
-    for(let d = Math.ceil(dBBottom/10)*10; d <= dBTop; d+=10){
-      const y = topMargin + ((dBTop - d)/dBRange) * usableH;
-      canvasCtx.fillStyle='#142b31';
-      canvasCtx.fillRect(leftPad - 10, y-0.5, cw - leftPad - 12, 1);
-      canvasCtx.fillStyle='#9fbfd6';
-      canvasCtx.fillText(String(d)+' dB', leftPad - 12, y);
+    // dB grid & labels
+    for(let d = Math.ceil(dBBottom/10)*10; d <= dBTop; d += 10){
+      const y = topMargin + ((dBTop - d) / dBRange) * usableH;
+      canvasCtx.fillStyle = '#142b31';
+      canvasCtx.fillRect(leftPad - 10, y - 0.5, cw - leftPad - 12, 1);
+      canvasCtx.fillStyle = '#9fbfd6';
+      canvasCtx.fillText(String(d) + ' dB', leftPad - 12, y);
     }
-    // bars
+    // spectral bars
     const nyquist = audioCtx.sampleRate / 2;
     const binFreq = audioCtx.sampleRate / analyser.fftSize;
     const usableW = cw - leftPad - 12;
@@ -517,43 +574,65 @@ function drawViz(){
     for(let i=0;i<floatFreq.length;i++){
       const fdb = floatFreq[i];
       let v = (fdb - dBBottom) / dBRange; v = Math.max(0, Math.min(1, v));
-      const x = leftPad + i*barW; const h = v * usableH;
-      canvasCtx.fillStyle = (i%2)?'#38bdf8':'#7dd3fc';
+      const x = leftPad + i * barW;
+      const h = v * usableH;
+      canvasCtx.fillStyle = (i%2) ? '#38bdf8' : '#7dd3fc';
       canvasCtx.fillRect(x, topMargin + (usableH - h), Math.max(1, barW*0.9), h);
     }
-    // log freq markers
+    // log-spaced freq labels
     const freqs = [50,75,100,150,200,300,400,500,750,1000,1500,2000,3000,5000,8000,10000,15000,20000];
-    canvasCtx.fillStyle='#cfeff7'; canvasCtx.font='11px monospace'; canvasCtx.textAlign='center'; canvasCtx.textBaseline='top';
+    canvasCtx.fillStyle = '#cfeff7';
+    canvasCtx.font = '11px monospace';
+    canvasCtx.textAlign = 'center';
+    canvasCtx.textBaseline = 'top';
     const logMin = Math.log10(20), logMax = Math.log10(Math.max(20000, nyquist));
-    let lastX = -9999; const minLabelSpacing = 40;
+    let lastLabelX = -9999;
+    const minLabelSpacing = 40;
     for(const f of freqs){
       if(f > nyquist) continue;
       const lx = Math.log10(Math.max(f,20));
       const pos = (lx - logMin) / (logMax - logMin);
       const x = leftPad + pos * usableW;
-      if(x - lastX < minLabelSpacing){
-        canvasCtx.strokeStyle='#244e57'; canvasCtx.beginPath(); canvasCtx.moveTo(x+0.5, topMargin+2); canvasCtx.lineTo(x+0.5, topMargin+usableH-2); canvasCtx.stroke();
+      if(x - lastLabelX < minLabelSpacing){
+        // draw tick only
+        canvasCtx.strokeStyle = '#244e57';
+        canvasCtx.beginPath(); canvasCtx.moveTo(x+0.5, topMargin+2); canvasCtx.lineTo(x+0.5, topMargin+usableH-2); canvasCtx.stroke();
         continue;
       }
-      canvasCtx.strokeStyle='#244e57'; canvasCtx.beginPath(); canvasCtx.moveTo(x+0.5, topMargin+2); canvasCtx.lineTo(x+0.5, topMargin+usableH-2); canvasCtx.stroke();
-      const label = (f>=1000)?(f/1000)+'k':String(f);
-      canvasCtx.fillStyle='#cfeff7'; canvasCtx.fillText(label, x+0.5, topMargin + usableH + 6);
-      lastX = x;
+      canvasCtx.strokeStyle = '#244e57';
+      canvasCtx.beginPath(); canvasCtx.moveTo(x+0.5, topMargin+2); canvasCtx.lineTo(x+0.5, topMargin+usableH-2); canvasCtx.stroke();
+      const label = (f >= 1000) ? (f/1000)+'k' : String(f);
+      canvasCtx.fillStyle = '#cfeff7';
+      canvasCtx.fillText(label, x+0.5, topMargin + usableH + 6);
+      lastLabelX = x;
     }
-    // level + meter
-    canvasCtx.fillStyle='#9fbfd6'; canvasCtx.font='12px monospace'; canvasCtx.textAlign='left'; canvasCtx.textBaseline='top';
+    // RMS label + meter
+    canvasCtx.fillStyle = '#9fbfd6';
+    canvasCtx.font = '12px monospace';
+    canvasCtx.textAlign = 'left';
+    canvasCtx.textBaseline = 'top';
     canvasCtx.fillText('Level: ' + dbfs.toFixed(1) + ' dBFS', leftPad + 6, 6);
-    const meterW = Math.min(usableW * 0.38, 180), meterH = 8, meterX = leftPad + 6, meterY = 28;
-    const meterNorm = Math.max(0, Math.min(1, (dbfs - dBBottom)/dBRange));
-    canvasCtx.fillStyle='#0e2a2f'; canvasCtx.fillRect(meterX, meterY, meterW, meterH);
-    canvasCtx.fillStyle='#38bdf8'; canvasCtx.fillRect(meterX, meterY, meterW*meterNorm, meterH);
-    canvasCtx.strokeStyle='#072f36'; canvasCtx.strokeRect(meterX, meterY, meterW, meterH);
-    canvasCtx.fillStyle='#9fbfd6'; canvasCtx.font='11px monospace'; canvasCtx.textAlign='left'; canvasCtx.textBaseline='bottom';
+    const meterW = Math.min(usableW * 0.38, 180), meterH = 8;
+    const meterX = leftPad + 6, meterY = 28;
+    const meterNorm = Math.max(0, Math.min(1, (dbfs - dBBottom) / dBRange));
+    canvasCtx.fillStyle = '#0e2a2f';
+    canvasCtx.fillRect(meterX, meterY, meterW, meterH);
+    canvasCtx.fillStyle = '#38bdf8';
+    canvasCtx.fillRect(meterX, meterY, meterW * meterNorm, meterH);
+    canvasCtx.strokeStyle = '#072f36';
+    canvasCtx.strokeRect(meterX, meterY, meterW, meterH);
+    // legend
+    canvasCtx.fillStyle = '#9fbfd6';
+    canvasCtx.font = '11px monospace';
+    canvasCtx.textAlign = 'left';
+    canvasCtx.textBaseline = 'bottom';
     canvasCtx.fillText('Freq (Hz) / Level (dB)', leftPad + 6, ch - 6);
   } else {
+    // idle bars
     canvasCtx.fillStyle = '#243447';
     for(let i=0;i<64;i++){
-      const x = i*(canvas.clientWidth/64), h = (Math.sin((Date.now()/300)+i)*0.4+0.5)*(canvas.clientHeight/3);
+      const x = i*(canvas.clientWidth/64);
+      const h = (Math.sin((Date.now()/300)+i)*0.4+0.5)*(canvas.clientHeight/3);
       canvasCtx.fillRect(x, canvas.clientHeight/2 - h/2, canvas.clientWidth/64*0.85, h);
     }
   }
