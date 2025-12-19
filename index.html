@@ -1,9 +1,9 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Demucs Player — 完全修正版</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Demucs Player – 修正版</title>
 
 <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
@@ -25,8 +25,8 @@ canvas{width:100%;height:300px;background:#0b0d12;border-radius:12px}
 <h2>Demucs Player</h2>
 
 <div style="display:flex;gap:8px;margin-bottom:10px">
-  <label class="btn" for="zipInput">ZIP</label>
-  <label class="btn" for="filesInput">2ファイル</label>
+  <label for="zipInput" class="btn">ZIP</label>
+  <label for="filesInput" class="btn">2ファイル</label>
   <button id="playBtn" class="btn" disabled>再生</button>
 </div>
 
@@ -62,20 +62,31 @@ canvas{width:100%;height:300px;background:#0b0d12;border-radius:12px}
 <input id="filesInput" type="file" accept="audio/*" multiple hidden>
 
 <script>
-/* ========= Audio Core ========= */
+/* ================= DOM取得（重要修正点） ================= */
+const zipInput   = document.getElementById('zipInput');
+const filesInput = document.getElementById('filesInput');
+const playBtn    = document.getElementById('playBtn');
+const seek       = document.getElementById('seek');
+const cur        = document.getElementById('cur');
+const total      = document.getElementById('total');
+const volV       = document.getElementById('volV');
+const volB       = document.getElementById('volB');
+const master     = document.getElementById('master');
+const logEl      = document.getElementById('log');
+
+/* ================= Audio Core ================= */
 let ctx, analyser, masterGain, gainV, gainB;
-let buffers = {v:null,b:null};
-let sources = {v:null,b:null};
+let buffers = { v:null, b:null };
+let sources = { v:null, b:null };
 let isPlaying = false;
 let playPos = 0;
-let raf;
+let startTime = 0;
 
-/* ---------- utils ---------- */
-const log = t => logEl.textContent += t + "\n";
+/* ================= Utils ================= */
+const log = t => { logEl.textContent += t + "\n"; logEl.scrollTop = logEl.scrollHeight; };
 const fmt = s => `${Math.floor(s/60)}:${String(Math.floor(s%60)).padStart(2,'0')}`;
-const logEl = document.getElementById('log');
 
-/* ---------- init ---------- */
+/* ================= Audio 初期化 ================= */
 function initCtx(){
   if(ctx) return;
   ctx = new AudioContext();
@@ -90,11 +101,11 @@ function initCtx(){
   analyser.connect(ctx.destination);
 }
 
-/* ---------- playback ---------- */
+/* ================= 再生制御 ================= */
 function stopSources(){
   ['v','b'].forEach(k=>{
     if(sources[k]){
-      try{sources[k].stop()}catch{}
+      try{ sources[k].stop(); }catch{}
       sources[k]=null;
     }
   });
@@ -103,7 +114,6 @@ function stopSources(){
 function startAt(t){
   initCtx();
   stopSources();
-  playPos = t;
 
   sources.v = ctx.createBufferSource();
   sources.b = ctx.createBufferSource();
@@ -113,93 +123,94 @@ function startAt(t){
   sources.v.connect(gainV);
   sources.b.connect(gainB);
 
-  const now = ctx.currentTime;
-  sources.v.start(now, t);
-  sources.b.start(now, t);
+  startTime = ctx.currentTime;
+  sources.v.start(startTime, t);
+  sources.b.start(startTime, t);
 
-  sources.v.onended = ()=>stop();
   isPlaying = true;
 }
 
-function stop(){
-  if(isPlaying){
-    playPos += ctx.currentTime - startTime;
-  }
-  stopSources();
-  isPlaying = false;
-}
-
-let startTime = 0;
-
-/* ---------- controls ---------- */
-document.getElementById('playBtn').onclick = async ()=>{
+/* ================= UI ================= */
+playBtn.onclick = async ()=>{
   initCtx();
   await ctx.resume();
-  startTime = ctx.currentTime;
   startAt(playPos);
 };
 
-document.getElementById('seek').oninput = e=>{
-  const v = Number(e.target.value);
-  document.getElementById('cur').textContent = fmt(v);
-  playPos = v;
+seek.oninput = e=>{
+  playPos = Number(e.target.value);
+  cur.textContent = fmt(playPos);
   if(isPlaying){
-    startTime = ctx.currentTime;
-    startAt(v);
+    startAt(playPos);
   }
 };
 
-document.getElementById('volV').oninput=e=>gainV.gain.value=e.target.value;
-document.getElementById('volB').oninput=e=>gainB.gain.value=e.target.value;
-document.getElementById('master').oninput=e=>masterGain.gain.value=e.target.value;
+volV.oninput = ()=>gainV.gain.value = volV.value;
+volB.oninput = ()=>gainB.gain.value = volB.value;
+master.oninput = ()=>masterGain.gain.value = master.value;
 
-/* ---------- load ---------- */
-async function loadBuffers(v,b){
+/* ================= ファイル読み込み（修正済み） ================= */
+async function loadBuffers(vFile, bFile){
   initCtx();
-  buffers.v = await ctx.decodeAudioData(await v.arrayBuffer());
-  buffers.b = await ctx.decodeAudioData(await b.arrayBuffer());
-  const d = Math.min(buffers.v.duration,buffers.b.duration);
+  buffers.v = await ctx.decodeAudioData(await vFile.arrayBuffer());
+  buffers.b = await ctx.decodeAudioData(await bFile.arrayBuffer());
+  const d = Math.min(buffers.v.duration, buffers.b.duration);
   seek.max = d;
   total.textContent = fmt(d);
-  playBtn.disabled=false;
+  playBtn.disabled = false;
+  log("loaded: " + vFile.name + " / " + bFile.name);
 }
 
 filesInput.onchange = ()=>{
-  if(filesInput.files.length>=2){
-    loadBuffers(filesInput.files[0],filesInput.files[1]);
+  if(filesInput.files.length >= 2){
+    loadBuffers(filesInput.files[0], filesInput.files[1]);
   }
 };
 
 zipInput.onchange = async ()=>{
   const zip = await JSZip.loadAsync(zipInput.files[0]);
-  const names = Object.keys(zip.files).filter(n=>/\.(wav|mp3)/i.test(n));
+  const names = Object.keys(zip.files).filter(n=>/\.(wav|mp3|m4a|ogg)$/i.test(n));
+  if(names.length < 2){
+    alert("ZIP内に音声が2つ必要です");
+    return;
+  }
   const v = await zip.file(names[0]).async("blob");
   const b = await zip.file(names[1]).async("blob");
   loadBuffers(v,b);
 };
 
-/* ---------- background ---------- */
+/* ================= ビジュアライザ ================= */
+const canvas = document.getElementById('viz');
+const c = canvas.getContext('2d');
+
+function resize(){
+  canvas.width = canvas.clientWidth;
+  canvas.height = canvas.clientHeight;
+}
+resize();
+window.addEventListener('resize', resize);
+
+function draw(){
+  requestAnimationFrame(draw);
+  if(!analyser) return;
+  const data = new Uint8Array(analyser.frequencyBinCount);
+  analyser.getByteFrequencyData(data);
+  c.clearRect(0,0,canvas.width,canvas.height);
+  data.forEach((v,i)=>{
+    c.fillStyle="#38bdf8";
+    c.fillRect(i, canvas.height, 1, -v);
+  });
+}
+draw();
+
+/* ================= バックグラウンド対応 ================= */
 document.addEventListener("visibilitychange",()=>{
   if(document.hidden && isPlaying){
     playPos += ctx.currentTime - startTime;
     stopSources();
+    isPlaying = false;
   }
 });
-
-/* ---------- viz ---------- */
-const canvas=document.getElementById('viz');
-const c=canvas.getContext('2d');
-function draw(){
-  raf=requestAnimationFrame(draw);
-  if(!analyser) return;
-  const data=new Uint8Array(analyser.frequencyBinCount);
-  analyser.getByteFrequencyData(data);
-  c.clearRect(0,0,canvas.width,canvas.height);
-  data.forEach((v,i)=>{
-    c.fillRect(i,canvas.height,1,-v);
-  });
-}
-draw();
 </script>
 </body>
 </html>
