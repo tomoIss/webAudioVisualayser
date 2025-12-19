@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Demucs Player — Seek 継続対応版</title>
+<title>Demucs Player — Seek 継続 + 背景復帰対応</title>
 
 <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
@@ -91,12 +91,15 @@ const logEl = document.getElementById('log');
 const log = (...a) => { logEl.textContent += a.join(' ') + '\n'; logEl.scrollTop = 1e9; };
 const fmtTime = s => !isFinite(s) ? '0:00' : `${Math.floor(s/60)}:${String(Math.floor(s)%60).padStart(2,'0')}`;
 
-/* ---------- Audio state (既存) ---------- */
+/* ---------- Audio state ---------- */
 let audioCtx = null, analyser = null, masterGain = null, gainV = null, gainB = null;
 let tracks = { vocals: null, backing: null }; // { mode:'buffer'|'media', buffer, el, fileName }
 let audioElements = [];
 let bufferSources = { vocals: null, backing: null };
 let isPlaying = false, pausedOffset = 0;
+
+/* --- resume-after-visibility flag --- */
+let resumeAfterVisible = false;
 
 /* --- AudioContext & nodes --- */
 function ensureAudio(){
@@ -166,7 +169,7 @@ function calcDuration(){
   return Infinity;
 }
 
-/* ---------- File inputs (既存：ZIP arraybuffer 経路) ---------- */
+/* ---------- File inputs (ZIP & files) ---------- */
 zipInput.addEventListener('change', async ()=>{
   const f = zipInput.files[0]; zipInput.value='';
   if(!f) return;
@@ -220,7 +223,7 @@ filesInput.addEventListener('change', async ()=>{
   playBtn.disabled = stopBtn.disabled = false; log('tracks set', {vocals:tracks.vocals.fileName, backing:tracks.backing.fileName});
 });
 
-/* ---------- Buffer helpers (追加: 単一ソースの開始/停止対応) ---------- */
+/* ---------- Buffer helpers ---------- */
 function stopBufferSource(role){
   const s = bufferSources[role];
   if(s && s.node){
@@ -240,18 +243,10 @@ function startBufferSource(role, offsetSec){
   s.onended = ()=>{ if(!s.loop) stopAll(); };
 }
 
-/* stop all buffer sources (既存) */
+/* start/stop both buffers (used by startAll or seekWhilePlaying) */
 function stopBufferPlayback(){
-  ['vocals','backing'].forEach(k=>{
-    const s = bufferSources[k];
-    if(s && s.node){
-      try{ s.node.stop(); }catch(e){}
-    }
-    bufferSources[k] = null;
-  });
+  ['vocals','backing'].forEach(k=>{ const s = bufferSources[k]; if(s && s.node){ try{ s.node.stop(); }catch(e){} } bufferSources[k]=null; });
 }
-
-/* start both buffers synchronously (既存) */
 function startBufferPlayback(offsetSec){
   if(!audioCtx) ensureAudio();
   stopBufferPlayback();
@@ -264,9 +259,11 @@ function startBufferPlayback(offsetSec){
   bufferSources.vocals = { node: sV, offset: offsetSec, startedAt: now };
   bufferSources.backing = { node: sB, offset: offsetSec, startedAt: now };
   sV.onended = ()=>{ if(!sV.loop) stopAll(); };
+  // ensure playing state set
+  isPlaying = true; playBtn.textContent = '停止';
 }
 
-/* --- Media node connection --- */
+/* --- Media node connect --- */
 function ensureMediaNode(role){
   const t = tracks[role];
   if(!t || t.mode !== 'media' || !t.el) return;
@@ -290,7 +287,6 @@ async function startAll(){
   if(!tracks.vocals || !tracks.backing) return alert('ファイルを読み込んでください');
   ensureAudio();
   if(audioCtx.state === 'suspended'){ try{ await audioCtx.resume(); log('audioCtx resumed'); }catch(e){ log('resume failed', e); } }
-  // update gains
   try{ gainV.gain.value = Number(volV.value); gainB.gain.value = Number(volB.value); masterGain.gain.value = Number(master.value); }catch(e){}
   if(tracks.vocals.mode === 'buffer' && tracks.backing.mode === 'buffer'){
     const offset = Number(seek.value) || 0;
@@ -298,7 +294,6 @@ async function startAll(){
     isPlaying = true; playBtn.textContent='停止'; log('started buffer at', offset);
     return;
   }
-  // media path
   for(const role of ['vocals','backing']){
     const t = tracks[role];
     if(t?.mode === 'media' && t.el){
@@ -355,37 +350,41 @@ function getCurrentTime(){
   }catch(e){ return 0; }
 }
 
-/* ---------- Seek while playing: 継続再生仕様（新） ---------- */
+/* ---------- Seek while playing: 継続再生仕様（強化） ---------- */
 async function seekWhilePlaying(time){
   if(!tracks.vocals || !tracks.backing) return;
   ensureAudio();
   if(audioCtx.state === 'suspended'){ try{ await audioCtx.resume(); }catch(e){} }
 
-  // case A: both buffers — re-create both synchronously
+  // both buffers -> restart both synchronously
   if(tracks.vocals.mode === 'buffer' && tracks.backing.mode === 'buffer'){
-    // uses existing helper which handles sync start
     startBufferPlayback(Number(time) || 0);
     return;
   }
 
-  // mixed / media cases: handle per-role
-  // For media: set currentTime; for buffer: restart that buffer at offset
-  // We'll set media currentTime first, then start buffer source(s) so they align.
+  // mixed / media cases
+  // 1) set media currentTime
+  const mediaPromises = [];
   for(const role of ['vocals','backing']){
     const t = tracks[role];
     if(t?.mode === 'media' && t.el){
       try{ t.el.currentTime = Number(time) || 0; }catch(e){ log('set currentTime failed', role, e && e.message ? e.message : e); }
+      // ensure media will play
+      mediaPromises.push(t.el.play().catch(e=>{ log('media play fail during seek', role, e && e.name); return e; }));
     }
   }
-  // Start or restart buffer sources (if any)
+  // 2) restart any buffer sources to new offset
   for(const role of ['vocals','backing']){
     const t = tracks[role];
     if(t?.mode === 'buffer'){
-      // stop and restart this single buffer to new offset
       stopBufferSource(role);
       startBufferSource(role, Number(time) || 0);
     }
   }
+  // wait for media play attempts (non-blocking, but helpful)
+  try{ await Promise.all(mediaPromises); }catch(e){}
+  // ensure UI state
+  isPlaying = true; playBtn.textContent = '停止';
 }
 
 /* ---------- UI wiring (seek 改良) ---------- */
@@ -408,10 +407,10 @@ seek.addEventListener('input', async ()=>{
   const v = Number(seek.value);
   cur.textContent = fmtTime(v);
   if(isPlaying){
-    // 新：再生を止めずに位置だけ変更して継続再生
+    // seek and continue playing without pressing play
     await seekWhilePlaying(v);
   }else{
-    // 停止時は単にポーズ位置を更新
+    // stopped: update paused offset
     pausedOffset = v;
   }
 });
@@ -427,6 +426,45 @@ setInterval(()=>{
     if(!lastSeekByUser){ seek.value = c; cur.textContent = fmtTime(c); }
   }
 },200);
+
+/* ---------- Visibility / background handling ---------- */
+async function handleVisible() {
+  // when returning to visible, resume audioCtx and restart playback if needed
+  if(!resumeAfterVisible) return;
+  log('Returning visible — resuming playback at', pausedOffset);
+  try{
+    ensureAudio();
+    if(audioCtx.state === 'suspended') await audioCtx.resume();
+  }catch(e){ log('resume error', e && e.message ? e.message : e); }
+  // resume playback at pausedOffset
+  try{
+    // set seek UI
+    seek.value = pausedOffset;
+    cur.textContent = fmtTime(pausedOffset);
+    // use seekWhilePlaying to restart appropriate sources
+    await seekWhilePlaying(pausedOffset);
+  }catch(e){ log('resume playback failed', e && e.message ? e.message : e); }
+  resumeAfterVisible = false;
+}
+
+function handleHidden(){
+  if(!isPlaying) return;
+  // store current position and stop playback so we can safely restart later
+  try{ pausedOffset = getCurrentTime(); }catch(e){ pausedOffset = Number(seek.value) || 0; }
+  log('Hidden — saving position', pausedOffset, 'and stopping playback');
+  // we stop all but keep flag to restart on visible
+  stopAll();
+  resumeAfterVisible = true;
+}
+
+document.addEventListener('visibilitychange', ()=>{
+  if(document.hidden) handleHidden();
+  else handleVisible();
+});
+
+// pagehide/pageshow for mobile browsers (iOS)
+window.addEventListener('pagehide', ()=>{ if(document.hidden) handleHidden(); });
+window.addEventListener('pageshow', ()=>{ if(!document.hidden) handleVisible(); });
 
 /* ---------- visualizer（そのまま） ---------- */
 const canvas = document.getElementById('viz');
@@ -471,7 +509,7 @@ function drawViz(){
       canvasCtx.fillStyle='#9fbfd6';
       canvasCtx.fillText(String(d)+' dB', leftPad - 12, y);
     }
-    // bars (use byte data for visual density if needed)
+    // bars
     const nyquist = audioCtx.sampleRate / 2;
     const binFreq = audioCtx.sampleRate / analyser.fftSize;
     const usableW = cw - leftPad - 12;
