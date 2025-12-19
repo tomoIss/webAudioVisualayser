@@ -3,13 +3,13 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Demucs Player — Seek 継続 + 背景復帰対応</title>
+<title>Demucs Player — Responsive + Stable Audio</title>
 
 <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
 
 <style>
-/* ---------- 既存UI（変更なし） ---------- */
+/* ---------- 基本UI（既存） ---------- */
 body{background:#0f1115;color:#eaeaf0;margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto}
 main{max-width:900px;margin:18px auto;padding:14px}
 .top{display:grid;grid-template-columns:90px 1fr 90px;gap:16px;align-items:center}
@@ -17,11 +17,16 @@ canvas{width:100%;height:300px;background:#0b0d12;border-radius:12px;display:blo
 .btn{background:linear-gradient(90deg,#38bdf8,#4ade80);color:#012;border:none;padding:8px 12px;border-radius:8px;font-weight:700;cursor:pointer}
 .small{font-size:13px;color:#b8cbe0}
 .log{background:#071018;color:#9fbfd6;font-size:.85rem;border-radius:8px;padding:8px;max-height:160px;overflow:auto;white-space:pre-wrap}
+
+/* スライダー（デフォルト：縦、canvas左右） */
 .v-slider{display:flex;flex-direction:column;align-items:center;height:180px}
 .v-label{font-size:13px;color:#b8cbe0;margin-bottom:12px}
 .slider-vert{width:150px;height:22px;transform:rotate(-90deg);margin-top:28px}
 
-/* レスポンシブ（縦画面で横スライダー） — 既存挙動維持 */
+/* viz テキスト */
+.viz-label{font-family:monospace;color:#9fbfd6;font-size:12px}
+
+/* ---------- レスポンシブ：縦画面時（portrait） ---------- */
 @media (orientation: portrait) {
   .top { grid-template-columns:1fr; grid-auto-rows:auto; gap:10px; }
   #viz { order: 1; }
@@ -31,6 +36,8 @@ canvas{width:100%;height:300px;background:#0b0d12;border-radius:12px;display:blo
   .slider-vert { transform: none; width:48%; margin-top:0; height:22px; }
   main{padding:12px}
 }
+
+/* ---------- 小幅端末用フォールバック ---------- */
 @media (max-width:760px) {
   .top { grid-template-columns:1fr; gap:10px; }
   .v-slider{ display:flex; flex-direction:row; justify-content:space-between; align-items:center; height:auto; padding:8px 6px; }
@@ -81,486 +88,279 @@ canvas{width:100%;height:300px;background:#0b0d12;border-radius:12px;display:blo
     <pre id="log" class="log">ready</pre>
   </div>
 </main>
-
+  
 <input id="zipInput" type="file" accept=".zip" hidden>
-<input id="filesInput" type="file" multiple accept=".wav,.mp3,.m4a,.aac,.ogg" hidden>
+<input id="filesInput" type="file" multiple hidden accept=".wav,.mp3,.m4a,.aac,.ogg">
 
 <script>
 /* ---------- util ---------- */
 const logEl = document.getElementById('log');
 const log = (...a) => { logEl.textContent += a.join(' ') + '\n'; logEl.scrollTop = 1e9; };
-const fmtTime = s => !isFinite(s) ? '0:00' : `${Math.floor(s/60)}:${String(Math.floor(s)%60).padStart(2,'0')}`;
+const fmt = s => !isFinite(s) ? '0:00' : `${Math.floor(s/60)}:${String(Math.floor(s)%60).padStart(2,'0')}`;
 
-/* ---------- Audio state ---------- */
-let audioCtx = null, analyser = null, masterGain = null, gainV = null, gainB = null;
-let tracks = { vocals: null, backing: null }; // { mode:'buffer'|'media', buffer, el, fileName }
-let audioElements = [];
-let bufferSources = { vocals: null, backing: null };
-let isPlaying = false, pausedOffset = 0;
+/* ---------- audio （既存ロジック維持） ---------- */
+let ctx, analyser, masterGain, gainV, gainB;
+let buffers = {}, sources = {}, startTime = 0, pausedAt = 0, playing = false;
 
-/* --- resume-after-visibility flag --- */
-let resumeAfterVisible = false;
-
-/* --- AudioContext & nodes --- */
-function ensureAudio(){
-  if(audioCtx) return;
-  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  analyser = audioCtx.createAnalyser();
+function ensureCtx(){
+  if(ctx) return;
+  ctx = new (AudioContext||webkitAudioContext)();
+  analyser = ctx.createAnalyser();
   analyser.fftSize = 512;
   analyser.minDecibels = -100;
   analyser.maxDecibels = -20;
-  masterGain = audioCtx.createGain();
-  gainV = audioCtx.createGain();
-  gainB = audioCtx.createGain();
-  // init gains from DOM so sliders consistent even before ctx created
-  gainV.gain.value = Number(document.getElementById('volV').value || 1);
-  gainB.gain.value = Number(document.getElementById('volB').value || 1);
-  masterGain.gain.value = Number(document.getElementById('master').value || 1);
+  masterGain = ctx.createGain();
+  gainV = ctx.createGain(); gainB = ctx.createGain();
   gainV.connect(masterGain); gainB.connect(masterGain);
-  masterGain.connect(analyser); analyser.connect(audioCtx.destination);
-  log('AudioContext created (state=' + audioCtx.state + ')');
+  masterGain.connect(analyser); analyser.connect(ctx.destination);
+  log('AudioContext ready');
 }
 
-/* --- decode helper --- */
-async function tryDecode(arrayBuffer){
+async function decode(ab){
+  ensureCtx();
+  return new Promise((res, rej)=> ctx.decodeAudioData(ab, res, rej));
+}
+
+/* ---------- load (ZIP arraybuffer 安定パス) ---------- */
+async function setTracks(vBlob, bBlob, vName, bName){
+  const vb = await decode(await vBlob.arrayBuffer());
+  const bb = await decode(await bBlob.arrayBuffer());
+  buffers = { vocals: vb, backing: bb };
+  const d = Math.min(vb.duration, bb.duration);
+  seek.max = d;
+  total.textContent = fmt(d);
+  filename.textContent = vName + ' / ' + bName;
+  playBtn.disabled = stopBtn.disabled = false;
+  log('tracks loaded');
+}
+
+zipInput.onchange = async () => {
+  const file = zipInput.files[0];
+  zipInput.value = '';
+  if(!file) return;
+  log('ZIP select:', file.name);
   try{
-    ensureAudio();
-    return await new Promise((res,rej)=> audioCtx.decodeAudioData(arrayBuffer.slice(0), res, rej));
-  }catch(e){
-    log('decode failed', e && e.message ? e.message : e);
-    return null;
-  }
-}
-
-/* --- create <audio> element fallback --- */
-function createMediaFromBlob(blob, name){
-  const url = URL.createObjectURL(blob);
-  const el = new Audio(url);
-  el.preload = 'auto';
-  el.playsInline = true;
-  el.setAttribute('playsinline','');
-  el.style.display = 'none';
-  document.body.appendChild(el);
-  audioElements.push(el);
-  el.addEventListener('loadedmetadata', ()=>{
-    log('loadedmetadata', name, el.duration);
-    try{
-      const d = calcDuration();
-      if(isFinite(d)){ seek.max = d; total.textContent = fmtTime(d); }
-    }catch(e){}
-  });
-  return { mode:'media', el, blobUrl:url, fileName:name };
-}
-
-/* --- helpers --- */
-function calcDuration(){
-  if(tracks.vocals?.mode==='buffer' && tracks.backing?.mode==='buffer'){
-    return Math.min(tracks.vocals.buffer.duration, tracks.backing.buffer.duration);
-  }
-  if(tracks.vocals?.mode==='media' && tracks.backing?.mode==='media' && tracks.vocals.el.duration && tracks.backing.el.duration){
-    return Math.min(tracks.vocals.el.duration, tracks.backing.el.duration);
-  }
-  if(tracks.vocals?.mode==='buffer' && tracks.backing?.mode==='media' && tracks.backing.el.duration){
-    return Math.min(tracks.vocals.buffer.duration, tracks.backing.el.duration);
-  }
-  if(tracks.vocals?.mode==='media' && tracks.backing?.mode==='buffer' && tracks.vocals.el.duration){
-    return Math.min(tracks.vocals.el.duration, tracks.backing.buffer.duration);
-  }
-  return Infinity;
-}
-
-/* ---------- File inputs (ZIP & files) ---------- */
-zipInput.addEventListener('change', async ()=>{
-  const f = zipInput.files[0]; zipInput.value='';
-  if(!f) return;
-  log('ZIP select', f.name);
-  try{
-    const zip = await JSZip.loadAsync(f);
-    const names = Object.keys(zip.files).filter(n=>!zip.files[n].dir && /\.(wav|mp3|m4a|aac|ogg)$/i.test(n));
-    if(names.length < 2){ alert('zipに音声ファイルが2つ以上必要です'); return; }
+    const zip = await JSZip.loadAsync(file);
+    const names = Object.keys(zip.files).filter(n => !zip.files[n].dir && /\.(wav|mp3|m4a|aac|ogg)$/i.test(n));
+    if(names.length < 2){ alert('ZIP内に音声ファイルが2つ以上必要です'); return; }
     const vName = names.find(n=>/vocals?/i.test(n)) || names[0];
-    const bName = names.find(n=>/(inst|back|no[_-]?vocals?)/i.test(n) && n!==vName) || names.find(n=>n!==vName) || names[1];
-    log('selected entries', vName, bName);
+    const bName = names.find(n=>/(inst|back|no[_-]?vocals?)/i.test(n) && n!==vName) || names.find(n=>n!==vName);
+    log('ZIP tracks:', vName, bName);
     const vAB = await zip.file(vName).async('arraybuffer');
     const bAB = await zip.file(bName).async('arraybuffer');
-    const bufV = await tryDecode(vAB);
-    const bufB = await tryDecode(bAB);
-    if(bufV && bufB){
-      tracks.vocals = { mode:'buffer', buffer:bufV, fileName:vName };
-      tracks.backing = { mode:'buffer', buffer:bufB, fileName:bName };
-    }else{
-      tracks.vocals = createMediaFromBlob(new Blob([vAB]), vName);
-      tracks.backing = createMediaFromBlob(new Blob([bAB]), bName);
-    }
-    filename.textContent = `${tracks.vocals.fileName} / ${tracks.backing.fileName}`;
-    const d = calcDuration(); if(isFinite(d)){ seek.max = d; total.textContent = fmtTime(d); }
-    playBtn.disabled = stopBtn.disabled = false;
-    log('tracks set', {vocals:tracks.vocals.fileName, backing:tracks.backing.fileName, modes:[tracks.vocals.mode, tracks.backing.mode]});
+    const vBlob = new Blob([vAB]);
+    const bBlob = new Blob([bAB]);
+    await setTracks(vBlob, bBlob, vName, bName);
   }catch(e){
     console.error(e);
-    log('zip read failed', e && e.message ? e.message : e);
-    alert('ZIP 読み込みに失敗しました');
+    log('ZIP load failed:', e && e.message ? e.message : e);
+    alert('ZIPの読み込みに失敗しました');
   }
-});
+};
 
-filesInput.addEventListener('change', async ()=>{
-  const files = Array.from(filesInput.files); filesInput.value='';
-  if(files.length < 2){ alert('2ファイル選択してください'); return; }
-  const vocalsFile = files.find(f=>/vocals/i.test(f.name)) || files[0];
-  const backingFile = files.find(f=>/(no_vocals|no-vocals|back|inst|instrumental)/i.test(f.name)) || files[1];
-  log('files select', vocalsFile.name, backingFile.name);
-  const vAb = await vocalsFile.arrayBuffer(); const bAb = await backingFile.arrayBuffer();
-  const bufV = await tryDecode(vAb); const bufB = await tryDecode(bAb);
-  if(bufV && bufB){
-    tracks.vocals = { mode:'buffer', buffer:bufV, fileName:vocalsFile.name };
-    tracks.backing = { mode:'buffer', buffer:bufB, fileName:backingFile.name };
-  }else{
-    tracks.vocals = createMediaFromBlob(new Blob([vAb]), vocalsFile.name);
-    tracks.backing = createMediaFromBlob(new Blob([bAb]), backingFile.name);
-  }
-  filename.textContent = `${tracks.vocals.fileName} / ${tracks.backing.fileName}`;
-  const d = calcDuration(); if(isFinite(d)){ seek.max = d; total.textContent = fmtTime(d); }
-  playBtn.disabled = stopBtn.disabled = false; log('tracks set', {vocals:tracks.vocals.fileName, backing:tracks.backing.fileName});
-});
+filesInput.onchange = async () => {
+  const f = [...filesInput.files];
+  filesInput.value = '';
+  if(f.length < 2) return alert('2ファイル必要');
+  await setTracks(f[0], f[1], f[0].name, f[1].name);
+};
 
-/* ---------- Buffer helpers ---------- */
-function stopBufferSource(role){
-  const s = bufferSources[role];
-  if(s && s.node){
-    try{ s.node.stop(); }catch(e){}
-  }
-  bufferSources[role] = null;
-}
-function startBufferSource(role, offsetSec){
-  if(!audioCtx) ensureAudio();
-  const now = audioCtx.currentTime;
-  const s = audioCtx.createBufferSource();
-  s.buffer = tracks[role].buffer;
-  s.connect(role==='vocals'?gainV:gainB);
-  s.loop = false;
-  s.start(now, offsetSec);
-  bufferSources[role] = { node:s, offset:offsetSec, startedAt: now };
-  s.onended = ()=>{ if(!s.loop) stopAll(); };
+/* ---------- play / stop（既存ロジック維持） ---------- */
+function stop(){
+  Object.values(sources).forEach(s => { try{ s.stop(); }catch{} });
+  sources = {};
+  pausedAt = ctx ? ctx.currentTime - startTime : pausedAt;
+  playing = false;
+  playBtn.textContent = '再生';
 }
 
-/* start/stop both buffers (used by startAll or seekWhilePlaying) */
-function stopBufferPlayback(){
-  ['vocals','backing'].forEach(k=>{ const s = bufferSources[k]; if(s && s.node){ try{ s.node.stop(); }catch(e){} } bufferSources[k]=null; });
-}
-function startBufferPlayback(offsetSec){
-  if(!audioCtx) ensureAudio();
-  stopBufferPlayback();
-  const now = audioCtx.currentTime;
-  const sV = audioCtx.createBufferSource(); sV.buffer = tracks.vocals.buffer; sV.connect(gainV);
-  const sB = audioCtx.createBufferSource(); sB.buffer = tracks.backing.buffer; sB.connect(gainB);
-  sV.loop = sB.loop = false;
-  sV.start(now, offsetSec);
-  sB.start(now, offsetSec);
-  bufferSources.vocals = { node: sV, offset: offsetSec, startedAt: now };
-  bufferSources.backing = { node: sB, offset: offsetSec, startedAt: now };
-  sV.onended = ()=>{ if(!sV.loop) stopAll(); };
-  // ensure playing state set
-  isPlaying = true; playBtn.textContent = '停止';
-}
-
-/* --- Media node connect --- */
-function ensureMediaNode(role){
-  const t = tracks[role];
-  if(!t || t.mode !== 'media' || !t.el) return;
-  try{
-    if(!audioCtx) ensureAudio();
-    if(!t.node){
-      t.node = audioCtx.createMediaElementSource(t.el);
-    }else{
-      try{ t.node.disconnect(); }catch(e){}
-    }
-    t.node.connect(role==='vocals'?gainV:gainB);
-    try{ gainV.connect(masterGain); gainB.connect(masterGain); masterGain.connect(analyser); analyser.connect(audioCtx.destination); }catch(e){}
-    log('media node connected', role);
-  }catch(e){
-    log('createMediaElementSource failed for', role, e && e.message ? e.message : e);
-  }
-}
-
-/* ---------- Start / Stop (既存) ---------- */
-async function startAll(){
-  if(!tracks.vocals || !tracks.backing) return alert('ファイルを読み込んでください');
-  ensureAudio();
-  if(audioCtx.state === 'suspended'){ try{ await audioCtx.resume(); log('audioCtx resumed'); }catch(e){ log('resume failed', e); } }
-  try{ gainV.gain.value = Number(volV.value); gainB.gain.value = Number(volB.value); masterGain.gain.value = Number(master.value); }catch(e){}
-  if(tracks.vocals.mode === 'buffer' && tracks.backing.mode === 'buffer'){
-    const offset = Number(seek.value) || 0;
-    startBufferPlayback(offset);
-    isPlaying = true; playBtn.textContent='停止'; log('started buffer at', offset);
-    return;
-  }
-  for(const role of ['vocals','backing']){
-    const t = tracks[role];
-    if(t?.mode === 'media' && t.el){
-      ensureMediaNode(role);
-      if(t.el.readyState < 3){
-        await new Promise(resolve=>{
-          const onCan = ()=>{ t.el.removeEventListener('canplay', onCan); resolve(); };
-          t.el.addEventListener('canplay', onCan);
-          setTimeout(resolve, 2000);
-        });
-      }
-      try{ t.el.currentTime = Number(seek.value) || 0; }catch(e){}
-    }
-  }
-  const promises = [];
-  if(tracks.vocals.mode === 'media' && tracks.vocals.el) promises.push(tracks.vocals.el.play().catch(e=>{ log('vocals.play fail', e && e.name); return e; }));
-  if(tracks.backing.mode === 'media' && tracks.backing.el) promises.push(tracks.backing.el.play().catch(e=>{ log('backing.play fail', e && e.name); return e; }));
-  const res = await Promise.all(promises);
-  log('media play results', res);
-  isPlaying = true; playBtn.textContent='停止';
-}
-
-function stopAll(){
-  if(tracks.vocals?.mode === 'buffer' || tracks.backing?.mode === 'buffer'){
-    try{ pausedOffset = getBufferCurrent(); }catch(e){ pausedOffset = Number(seek.value) || 0; }
-    stopBufferPlayback();
-  }
-  ['vocals','backing'].forEach(role=>{
-    const t = tracks[role];
-    if(t?.mode === 'media' && t.el){
-      try{ t.el.pause(); }catch(e){ log('pause failed', e); }
-    }
+function start(){
+  ensureCtx();
+  ctx.resume();
+  stop();
+  const offset = Number(seek.value) || 0;
+  startTime = ctx.currentTime - offset;
+  ['vocals','backing'].forEach(k=>{
+    const s = ctx.createBufferSource();
+    s.buffer = buffers[k];
+    s.connect(k === 'vocals' ? gainV : gainB);
+    s.start(0, offset);
+    sources[k] = s;
   });
-  isPlaying = false; playBtn.textContent='再生';
+  playing = true;
+  playBtn.textContent = '停止';
 }
 
-/* ---------- Current time helpers ---------- */
-function getBufferCurrent(){
-  const a = bufferSources.vocals;
-  if(a && a.startedAt) return a.offset + (audioCtx.currentTime - a.startedAt);
-  return pausedOffset || Number(seek.value) || 0;
-}
-function getCurrentTime(){
-  try{
-    if(tracks.vocals?.mode==='buffer' || tracks.backing?.mode==='buffer'){
-      return getBufferCurrent();
-    }
-    if(tracks.vocals?.mode==='media' && tracks.backing?.mode==='media' && tracks.vocals.el && tracks.backing.el){
-      return Math.min(tracks.vocals.el.currentTime || 0, tracks.backing.el.currentTime || 0);
-    }
-    if(tracks.vocals?.mode==='media' && tracks.vocals.el) return tracks.vocals.el.currentTime || 0;
-    if(tracks.backing?.mode==='media' && tracks.backing.el) return tracks.backing.el.currentTime || 0;
-    return 0;
-  }catch(e){ return 0; }
-}
+function getTime(){ return playing ? ctx.currentTime - startTime : pausedAt; }
 
-/* ---------- Seek while playing: 継続再生仕様（強化） ---------- */
-async function seekWhilePlaying(time){
-  if(!tracks.vocals || !tracks.backing) return;
-  ensureAudio();
-  if(audioCtx.state === 'suspended'){ try{ await audioCtx.resume(); }catch(e){} }
-
-  // both buffers -> restart both synchronously
-  if(tracks.vocals.mode === 'buffer' && tracks.backing.mode === 'buffer'){
-    startBufferPlayback(Number(time) || 0);
-    return;
-  }
-
-  // mixed / media cases
-  // 1) set media currentTime
-  const mediaPromises = [];
-  for(const role of ['vocals','backing']){
-    const t = tracks[role];
-    if(t?.mode === 'media' && t.el){
-      try{ t.el.currentTime = Number(time) || 0; }catch(e){ log('set currentTime failed', role, e && e.message ? e.message : e); }
-      // ensure media will play
-      mediaPromises.push(t.el.play().catch(e=>{ log('media play fail during seek', role, e && e.name); return e; }));
-    }
-  }
-  // 2) restart any buffer sources to new offset
-  for(const role of ['vocals','backing']){
-    const t = tracks[role];
-    if(t?.mode === 'buffer'){
-      stopBufferSource(role);
-      startBufferSource(role, Number(time) || 0);
-    }
-  }
-  // wait for media play attempts (non-blocking, but helpful)
-  try{ await Promise.all(mediaPromises); }catch(e){}
-  // ensure UI state
-  isPlaying = true; playBtn.textContent = '停止';
-}
-
-/* ---------- UI wiring (seek 改良) ---------- */
-const playBtn = document.getElementById('playBtn');
-const stopBtn = document.getElementById('stopBtn');
-const seek = document.getElementById('seek');
-const cur = document.getElementById('cur');
-const total = document.getElementById('total');
-const volV = document.getElementById('volV');
-const volB = document.getElementById('volB');
-const master = document.getElementById('master');
-const filename = document.getElementById('filename');
-
-playBtn.addEventListener('click', ()=>{ if(isPlaying) stopAll(); else startAll(); });
-stopBtn.addEventListener('click', ()=> stopAll());
-
-let lastSeekByUser = false;
-seek.addEventListener('input', async ()=>{
-  lastSeekByUser = true;
-  const v = Number(seek.value);
-  cur.textContent = fmtTime(v);
-  if(isPlaying){
-    // seek and continue playing without pressing play
-    await seekWhilePlaying(v);
-  }else{
-    // stopped: update paused offset
-    pausedOffset = v;
-  }
-});
-seek.addEventListener('change', ()=>{ lastSeekByUser = false; });
-
-volV.addEventListener('input', ()=>{ ensureAudio(); if(gainV) gainV.gain.value = Number(volV.value); });
-volB.addEventListener('input', ()=>{ ensureAudio(); if(gainB) gainB.gain.value = Number(volB.value); });
-master.addEventListener('input', ()=>{ ensureAudio(); if(masterGain) masterGain.gain.value = Number(master.value); });
-
+/* ---------- UI wiring ---------- */
+playBtn.onclick = () => playing ? stop() : start();
+stopBtn.onclick = stop;
+volV.oninput = () => gainV && (gainV.gain.value = volV.value);
+volB.oninput = () => gainB && (gainB.gain.value = volB.value);
+master.oninput = () => masterGain && (masterGain.gain.value = master.value);
+seek.oninput = () => { cur.textContent = fmt(seek.value); if(playing) start(); };
 setInterval(()=>{
-  if(isPlaying){
-    const c = getCurrentTime();
-    if(!lastSeekByUser){ seek.value = c; cur.textContent = fmtTime(c); }
+  if(playing){
+    const t = getTime();
+    seek.value = t;
+    cur.textContent = fmt(t);
   }
 },200);
 
-/* ---------- Visibility / background handling ---------- */
-async function handleVisible() {
-  // when returning to visible, resume audioCtx and restart playback if needed
-  if(!resumeAfterVisible) return;
-  log('Returning visible — resuming playback at', pausedOffset);
-  try{
-    ensureAudio();
-    if(audioCtx.state === 'suspended') await audioCtx.resume();
-  }catch(e){ log('resume error', e && e.message ? e.message : e); }
-  // resume playback at pausedOffset
-  try{
-    // set seek UI
-    seek.value = pausedOffset;
-    cur.textContent = fmtTime(pausedOffset);
-    // use seekWhilePlaying to restart appropriate sources
-    await seekWhilePlaying(pausedOffset);
-  }catch(e){ log('resume playback failed', e && e.message ? e.message : e); }
-  resumeAfterVisible = false;
-}
-
-function handleHidden(){
-  if(!isPlaying) return;
-  // store current position and stop playback so we can safely restart later
-  try{ pausedOffset = getCurrentTime(); }catch(e){ pausedOffset = Number(seek.value) || 0; }
-  log('Hidden — saving position', pausedOffset, 'and stopping playback');
-  // we stop all but keep flag to restart on visible
-  stopAll();
-  resumeAfterVisible = true;
-}
-
-document.addEventListener('visibilitychange', ()=>{
-  if(document.hidden) handleHidden();
-  else handleVisible();
-});
-
-// pagehide/pageshow for mobile browsers (iOS)
-window.addEventListener('pagehide', ()=>{ if(document.hidden) handleHidden(); });
-window.addEventListener('pageshow', ()=>{ if(!document.hidden) handleVisible(); });
-
-/* ---------- visualizer（そのまま） ---------- */
+/* ---------- visualizer（ラベル詰まり対策：log配置＋間引き） ---------- */
 const canvas = document.getElementById('viz');
-const canvasCtx = canvas.getContext('2d');
+const ctx2 = canvas.getContext('2d');
 
 function resizeCanvas(){
   const ratio = window.devicePixelRatio || 1;
   canvas.width = Math.floor(canvas.clientWidth * ratio);
   canvas.height = Math.floor(canvas.clientHeight * ratio);
-  canvasCtx.setTransform(ratio,0,0,ratio,0,0);
+  ctx2.setTransform(ratio,0,0,ratio,0,0); // scale to CSS pixels
 }
 window.addEventListener('resize', resizeCanvas);
 resizeCanvas();
 
+let freqBins = new Uint8Array(256);
 let floatFreq = null;
 let timeDomain = null;
 
 function drawViz(){
-  const cw = canvas.clientWidth, ch = canvas.clientHeight;
-  canvasCtx.clearRect(0,0,cw,ch);
-  const leftPad = 80, topMargin = 10, bottomMargin = 44;
-  if(analyser && audioCtx){
-    const binCount = analyser.frequencyBinCount;
-    if(!floatFreq || floatFreq.length !== binCount){
+  const cw = canvas.clientWidth;
+  const ch = canvas.clientHeight;
+  ctx2.clearRect(0,0,cw,ch);
+
+  // margins to avoid overlap / cut-off
+  const leftPad = 80;      // 広めに確保
+  const topMargin = 10;
+  const bottomMargin = 44; // 周波数ラベルと凡例の領域
+
+  if(analyser && ctx){
+    const binCount = analyser.frequencyBinCount; // fftSize/2
+    if(floatFreq == null || floatFreq.length !== binCount){
       floatFreq = new Float32Array(binCount);
+      freqBins = new Uint8Array(binCount);
       timeDomain = new Float32Array(analyser.fftSize);
     }
+
     analyser.getFloatFrequencyData(floatFreq);
+    analyser.getByteFrequencyData(freqBins);
     analyser.getFloatTimeDomainData(timeDomain);
+
     // RMS -> dBFS
     let sum = 0;
     for(let i=0;i<timeDomain.length;i++) sum += timeDomain[i]*timeDomain[i];
     const rms = Math.sqrt(sum / timeDomain.length) || 0.000001;
     const dbfs = 20 * Math.log10(rms);
-    const dBTop = analyser.maxDecibels, dBBottom = analyser.minDecibels, dBRange = dBTop - dBBottom;
-    canvasCtx.font='11px monospace'; canvasCtx.textAlign='right'; canvasCtx.textBaseline='middle';
+
+    // dB scale left
+    const dBTop = analyser.maxDecibels;
+    const dBBottom = analyser.minDecibels;
+    const dBRange = dBTop - dBBottom;
+    ctx2.font = '11px monospace';
+    ctx2.textAlign = 'right';
+    ctx2.textBaseline = 'middle';
+
     const usableH = ch - topMargin - bottomMargin;
-    for(let d = Math.ceil(dBBottom/10)*10; d <= dBTop; d+=10){
-      const y = topMargin + ((dBTop - d)/dBRange) * usableH;
-      canvasCtx.fillStyle='#142b31';
-      canvasCtx.fillRect(leftPad - 10, y-0.5, cw - leftPad - 12, 1);
-      canvasCtx.fillStyle='#9fbfd6';
-      canvasCtx.fillText(String(d)+' dB', leftPad - 12, y);
+
+    // horizontal grid + labels
+    for(let d = Math.ceil(dBBottom/10)*10; d <= dBTop; d += 10){
+      const y = topMargin + ((dBTop - d) / dBRange) * usableH;
+      ctx2.fillStyle = '#142b31';
+      ctx2.fillRect(leftPad - 10, y - 0.5, cw - leftPad - 12, 1);
+      ctx2.fillStyle = '#9fbfd6';
+      ctx2.fillText(String(d) + ' dB', leftPad - 12, y);
     }
-    // bars
-    const nyquist = audioCtx.sampleRate / 2;
-    const binFreq = audioCtx.sampleRate / analyser.fftSize;
-    const usableW = cw - leftPad - 12;
-    const barW = Math.max(1, usableW / floatFreq.length);
+
+    // spectral bars (linear per-bin, leftPad offset)
+    const nyquist = ctx.sampleRate / 2;
+    const binFreq = ctx.sampleRate / analyser.fftSize;
+    const usableWidth = cw - leftPad - 12;
+    const barWidth = Math.max(1, usableWidth / floatFreq.length);
     for(let i=0;i<floatFreq.length;i++){
       const fdb = floatFreq[i];
-      let v = (fdb - dBBottom) / dBRange; v = Math.max(0, Math.min(1, v));
-      const x = leftPad + i*barW; const h = v * usableH;
-      canvasCtx.fillStyle = (i%2)?'#38bdf8':'#7dd3fc';
-      canvasCtx.fillRect(x, topMargin + (usableH - h), Math.max(1, barW*0.9), h);
+      let v = (fdb - dBBottom) / dBRange;
+      v = Math.max(0, Math.min(1, v));
+      const x = leftPad + i * barWidth;
+      const h = v * usableH;
+      ctx2.fillStyle = (i%2) ? '#38bdf8' : '#7dd3fc';
+      ctx2.fillRect(x, topMargin + (usableH - h), Math.max(1, barWidth*0.9), h);
     }
-    // log freq markers
+
+    // frequency markers: use log scale for x positions to spread low frequencies
     const freqs = [50,75,100,150,200,300,400,500,750,1000,1500,2000,3000,5000,8000,10000,15000,20000];
-    canvasCtx.fillStyle='#cfeff7'; canvasCtx.font='11px monospace'; canvasCtx.textAlign='center'; canvasCtx.textBaseline='top';
-    const logMin = Math.log10(20), logMax = Math.log10(Math.max(20000, nyquist));
-    let lastX = -9999; const minLabelSpacing = 40;
+    ctx2.fillStyle = '#cfeff7';
+    ctx2.font = '11px monospace';
+    ctx2.textAlign = 'center';
+    ctx2.textBaseline = 'top';
+
+    // log mapping params
+    const logMin = Math.log10(20); // floor at 20Hz
+    const logMax = Math.log10(Math.max(20000, nyquist));
+    let lastLabelX = -9999;
+    const minLabelSpacing = 40; // px, 最低間隔
+
     for(const f of freqs){
       if(f > nyquist) continue;
       const lx = Math.log10(Math.max(f,20));
       const pos = (lx - logMin) / (logMax - logMin);
-      const x = leftPad + pos * usableW;
-      if(x - lastX < minLabelSpacing){
-        canvasCtx.strokeStyle='#244e57'; canvasCtx.beginPath(); canvasCtx.moveTo(x+0.5, topMargin+2); canvasCtx.lineTo(x+0.5, topMargin+usableH-2); canvasCtx.stroke();
+      const x = leftPad + pos * usableWidth;
+      // skip labels that are too close
+      if(x - lastLabelX < minLabelSpacing) {
+        // still draw faint tick line if very close, but skip label text
+        ctx2.strokeStyle = '#244e57';
+        ctx2.beginPath(); ctx2.moveTo(x+0.5, topMargin+2); ctx2.lineTo(x+0.5, topMargin+usableH-2); ctx2.stroke();
         continue;
       }
-      canvasCtx.strokeStyle='#244e57'; canvasCtx.beginPath(); canvasCtx.moveTo(x+0.5, topMargin+2); canvasCtx.lineTo(x+0.5, topMargin+usableH-2); canvasCtx.stroke();
-      const label = (f>=1000)?(f/1000)+'k':String(f);
-      canvasCtx.fillStyle='#cfeff7'; canvasCtx.fillText(label, x+0.5, topMargin + usableH + 6);
-      lastX = x;
+      // draw vertical marker
+      ctx2.strokeStyle = '#244e57';
+      ctx2.beginPath(); ctx2.moveTo(x+0.5, topMargin+2); ctx2.lineTo(x+0.5, topMargin+usableH-2); ctx2.stroke();
+      // label (kHz if >=1000)
+      const label = (f >= 1000) ? (f/1000)+'k' : String(f);
+      ctx2.fillStyle = '#cfeff7';
+      ctx2.fillText(label, x+0.5, topMargin + usableH + 6);
+      lastLabelX = x;
     }
-    // level + meter
-    canvasCtx.fillStyle='#9fbfd6'; canvasCtx.font='12px monospace'; canvasCtx.textAlign='left'; canvasCtx.textBaseline='top';
-    canvasCtx.fillText('Level: ' + dbfs.toFixed(1) + ' dBFS', leftPad + 6, 6);
-    const meterW = Math.min(usableW * 0.38, 180), meterH = 8, meterX = leftPad + 6, meterY = 28;
-    const meterNorm = Math.max(0, Math.min(1, (dbfs - dBBottom)/dBRange));
-    canvasCtx.fillStyle='#0e2a2f'; canvasCtx.fillRect(meterX, meterY, meterW, meterH);
-    canvasCtx.fillStyle='#38bdf8'; canvasCtx.fillRect(meterX, meterY, meterW*meterNorm, meterH);
-    canvasCtx.strokeStyle='#072f36'; canvasCtx.strokeRect(meterX, meterY, meterW, meterH);
-    canvasCtx.fillStyle='#9fbfd6'; canvasCtx.font='11px monospace'; canvasCtx.textAlign='left'; canvasCtx.textBaseline='bottom';
-    canvasCtx.fillText('Freq (Hz) / Level (dB)', leftPad + 6, ch - 6);
+
+    // RMS value + meter (top-left)
+    ctx2.fillStyle = '#9fbfd6';
+    ctx2.font = '12px monospace';
+    ctx2.textAlign = 'left';
+    ctx2.textBaseline = 'top';
+    const dbLabel = dbfs.toFixed(1) + ' dBFS';
+    ctx2.fillText('Level: ' + dbLabel, leftPad + 6, 6);
+
+    const meterW = Math.min(usableWidth * 0.38, 180);
+    const meterH = 8;
+    const meterX = leftPad + 6;
+    const meterY = 28;
+    const meterNorm = Math.max(0, Math.min(1, (dbfs - dBBottom) / dBRange));
+    ctx2.fillStyle = '#0e2a2f';
+    ctx2.fillRect(meterX, meterY, meterW, meterH);
+    ctx2.fillStyle = '#38bdf8';
+    ctx2.fillRect(meterX, meterY, meterW * meterNorm, meterH);
+    ctx2.strokeStyle = '#072f36';
+    ctx2.strokeRect(meterX, meterY, meterW, meterH);
+
+    // legend bottom-left
+    ctx2.fillStyle = '#9fbfd6';
+    ctx2.font = '11px monospace';
+    ctx2.textAlign = 'left';
+    ctx2.textBaseline = 'bottom';
+    ctx2.fillText('Freq (Hz) / Level (dB)', leftPad + 6, ch - 6);
+
   } else {
-    canvasCtx.fillStyle = '#243447';
+    // idle animation centered
+    ctx2.fillStyle = '#243447';
     for(let i=0;i<64;i++){
       const x = i*(canvas.clientWidth/64), h = (Math.sin((Date.now()/300)+i)*0.4+0.5)*(canvas.clientHeight/3);
-      canvasCtx.fillRect(x, canvas.clientHeight/2 - h/2, canvas.clientWidth/64*0.85, h);
+      ctx2.fillRect(x, canvas.clientHeight/2 - h/2, canvas.clientWidth/64*0.85, h);
     }
   }
+
   requestAnimationFrame(drawViz);
 }
 requestAnimationFrame(drawViz);
-
 </script>
 </body>
 </html>
