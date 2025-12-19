@@ -162,11 +162,14 @@ filesInput.onchange = async () => {
   const f = [...filesInput.files];
   filesInput.value = '';
   if(f.length < 2) return alert('2ファイル必要');
+
   // ファイル名から自動判別
-　const vFile = files.find(f => /vocals?/i.test(f.name)) || files[0];
-　const bFile = files.find(f => /(inst|back|no[_-]?vocals?)/i.test(f.name) && f !== vFile) 
-              || files.find(f => f !== vFile);
-  await setTracks(f[0], f[1], f[0].name, f[1].name);
+  const vFile = f.find(f => /vocals?/i.test(f.name)) || f[0];
+  const bFile = f.find(f => /(inst|back|no[_-]?vocals?)/i.test(f.name) && f !== vFile) 
+              || f.find(f => f !== vFile);
+
+  // 判別したファイルを渡す
+  await setTracks(vFile, bFile, vFile.name, bFile.name);
 };
 
 /* ---------- play / stop（既存ロジック維持） ---------- */
