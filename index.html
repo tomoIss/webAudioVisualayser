@@ -1,216 +1,566 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Demucs Player – 修正版</title>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Demucs Player — Seek 継続 + 背景復帰対応</title>
 
 <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
 
 <style>
-body{background:#0f1115;color:#eaeaf0;margin:0}
-main{max-width:960px;margin:16px auto;padding:12px}
+/* ---------- 既存UI（変更なし） ---------- */
+body{background:#0f1115;color:#eaeaf0;margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto}
+main{max-width:900px;margin:18px auto;padding:14px}
 .top{display:grid;grid-template-columns:90px 1fr 90px;gap:16px;align-items:center}
-canvas{width:100%;height:300px;background:#0b0d12;border-radius:12px}
-.btn{background:linear-gradient(90deg,#38bdf8,#4ade80);color:#012;border:none;padding:8px 12px;border-radius:8px;font-weight:700}
+canvas{width:100%;height:300px;background:#0b0d12;border-radius:12px;display:block}
+.btn{background:linear-gradient(90deg,#38bdf8,#4ade80);color:#012;border:none;padding:8px 12px;border-radius:8px;font-weight:700;cursor:pointer}
+.small{font-size:13px;color:#b8cbe0}
+.log{background:#071018;color:#9fbfd6;font-size:.85rem;border-radius:8px;padding:8px;max-height:160px;overflow:auto;white-space:pre-wrap}
 .v-slider{display:flex;flex-direction:column;align-items:center;height:180px}
-.slider-vert{width:150px;transform:rotate(-90deg);margin-top:28px}
-.log{background:#071018;color:#9fbfd6;font-size:.85rem;border-radius:8px;padding:8px;max-height:140px;overflow:auto}
+.v-label{font-size:13px;color:#b8cbe0;margin-bottom:12px}
+.slider-vert{width:150px;height:22px;transform:rotate(-90deg);margin-top:28px}
+
+/* レスポンシブ（縦画面で横スライダー） — 既存挙動維持 */
+@media (orientation: portrait) {
+  .top { grid-template-columns:1fr; grid-auto-rows:auto; gap:10px; }
+  #viz { order: 1; }
+  .v-slider { order: 2; flex-direction: row; justify-content: space-between; align-items:center; height:auto; padding:8px 6px; }
+  .v-slider + .v-slider { margin-top:6px; }
+  .v-label { margin-bottom:0; margin-right:8px; font-size:12px; width:58px; text-align:left; }
+  .slider-vert { transform: none; width:48%; margin-top:0; height:22px; }
+  main{padding:12px}
+}
+@media (max-width:760px) {
+  .top { grid-template-columns:1fr; gap:10px; }
+  .v-slider{ display:flex; flex-direction:row; justify-content:space-between; align-items:center; height:auto; padding:8px 6px; }
+  .v-label{ margin-bottom:0; margin-right:8px; font-size:12px; width:58px; text-align:left; }
+  .slider-vert{ transform:none; width:48%; margin-top:0; height:22px; }
+  main{padding:10px}
+}
 </style>
 </head>
-
 <body>
 <main>
-<h2>Demucs Player</h2>
+  <h2>Demucs Player</h2>
 
-<div style="display:flex;gap:8px;margin-bottom:10px">
-  <label for="zipInput" class="btn">ZIP</label>
-  <label for="filesInput" class="btn">2ファイル</label>
-  <button id="playBtn" class="btn" disabled>再生</button>
-</div>
-
-<div class="top">
-  <div class="v-slider">
-    <div>Vocals</div>
-    <input id="volV" class="slider-vert" type="range" min="0" max="1" step="0.01" value="1">
+  <div style="display:flex;gap:8px;margin-bottom:10px">
+    <label class="btn" for="zipInput">ZIP読込</label>
+    <label class="btn" for="filesInput">2ファイル（vocals / backing）</label>
+    <button class="btn" id="playBtn" disabled>再生</button>
+    <button class="btn" id="stopBtn" disabled>停止</button>
   </div>
 
-  <canvas id="viz"></canvas>
+  <div class="top">
+    <div class="v-slider" id="vslider-v">
+      <div class="v-label">Vocals</div>
+      <input id="volV" type="range" min="0" max="1" step="0.01" value="1" class="slider-vert">
+    </div>
 
-  <div class="v-slider">
-    <div>Backing</div>
-    <input id="volB" class="slider-vert" type="range" min="0" max="1" step="0.01" value="1">
+    <canvas id="viz" aria-hidden="true"></canvas>
+
+    <div class="v-slider" id="vslider-b">
+      <div class="v-label">Backing</div>
+      <input id="volB" type="range" min="0" max="1" step="0.01" value="1" class="slider-vert">
+    </div>
   </div>
-</div>
 
-<input id="seek" type="range" min="0" max="1" step="0.01" value="0" style="width:100%;margin-top:12px">
-<div style="display:flex;justify-content:space-between">
-  <small id="cur">0:00</small>
-  <small id="total">0:00</small>
-</div>
+  <div style="margin-top:14px">
+    <input id="seek" type="range" min="0" max="1" step="0.01" value="0" style="width:100%">
+    <div style="display:flex;justify-content:space-between">
+      <small id="cur">0:00</small>
+      <small id="total">0:00</small>
+    </div>
 
-<div style="display:flex;gap:8px;align-items:center">
-  <div>Master</div>
-  <input id="master" type="range" min="0" max="1" step="0.01" value="1" style="flex:1">
-</div>
+    <div style="display:flex;align-items:center;gap:8px;margin-top:8px">
+      <span class="small">Master</span>
+      <input id="master" type="range" min="0" max="1" step="0.01" value="1" style="flex:1">
+      <span id="filename" class="small">未選択</span>
+    </div>
 
-<pre id="log" class="log">ready</pre>
+    <pre id="log" class="log">ready</pre>
+  </div>
 </main>
 
 <input id="zipInput" type="file" accept=".zip" hidden>
-<input id="filesInput" type="file" accept="audio/*" multiple hidden>
+<input id="filesInput" type="file" multiple accept=".wav,.mp3,.m4a,.aac,.ogg" hidden>
 
 <script>
-/* ================= DOM取得（重要修正点） ================= */
-const zipInput   = document.getElementById('zipInput');
-const filesInput = document.getElementById('filesInput');
-const playBtn    = document.getElementById('playBtn');
-const seek       = document.getElementById('seek');
-const cur        = document.getElementById('cur');
-const total      = document.getElementById('total');
-const volV       = document.getElementById('volV');
-const volB       = document.getElementById('volB');
-const master     = document.getElementById('master');
-const logEl      = document.getElementById('log');
+/* ---------- util ---------- */
+const logEl = document.getElementById('log');
+const log = (...a) => { logEl.textContent += a.join(' ') + '\n'; logEl.scrollTop = 1e9; };
+const fmtTime = s => !isFinite(s) ? '0:00' : `${Math.floor(s/60)}:${String(Math.floor(s)%60).padStart(2,'0')}`;
 
-/* ================= Audio Core ================= */
-let ctx, analyser, masterGain, gainV, gainB;
-let buffers = { v:null, b:null };
-let sources = { v:null, b:null };
-let isPlaying = false;
-let playPos = 0;
-let startTime = 0;
+/* ---------- Audio state ---------- */
+let audioCtx = null, analyser = null, masterGain = null, gainV = null, gainB = null;
+let tracks = { vocals: null, backing: null }; // { mode:'buffer'|'media', buffer, el, fileName }
+let audioElements = [];
+let bufferSources = { vocals: null, backing: null };
+let isPlaying = false, pausedOffset = 0;
 
-/* ================= Utils ================= */
-const log = t => { logEl.textContent += t + "\n"; logEl.scrollTop = logEl.scrollHeight; };
-const fmt = s => `${Math.floor(s/60)}:${String(Math.floor(s%60)).padStart(2,'0')}`;
+/* --- resume-after-visibility flag --- */
+let resumeAfterVisible = false;
 
-/* ================= Audio 初期化 ================= */
-function initCtx(){
-  if(ctx) return;
-  ctx = new AudioContext();
-  analyser = ctx.createAnalyser();
-  masterGain = ctx.createGain();
-  gainV = ctx.createGain();
-  gainB = ctx.createGain();
-
-  gainV.connect(masterGain);
-  gainB.connect(masterGain);
-  masterGain.connect(analyser);
-  analyser.connect(ctx.destination);
+/* --- AudioContext & nodes --- */
+function ensureAudio(){
+  if(audioCtx) return;
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  analyser = audioCtx.createAnalyser();
+  analyser.fftSize = 512;
+  analyser.minDecibels = -100;
+  analyser.maxDecibels = -20;
+  masterGain = audioCtx.createGain();
+  gainV = audioCtx.createGain();
+  gainB = audioCtx.createGain();
+  // init gains from DOM so sliders consistent even before ctx created
+  gainV.gain.value = Number(document.getElementById('volV').value || 1);
+  gainB.gain.value = Number(document.getElementById('volB').value || 1);
+  masterGain.gain.value = Number(document.getElementById('master').value || 1);
+  gainV.connect(masterGain); gainB.connect(masterGain);
+  masterGain.connect(analyser); analyser.connect(audioCtx.destination);
+  log('AudioContext created (state=' + audioCtx.state + ')');
 }
 
-/* ================= 再生制御 ================= */
-function stopSources(){
-  ['v','b'].forEach(k=>{
-    if(sources[k]){
-      try{ sources[k].stop(); }catch{}
-      sources[k]=null;
+/* --- decode helper --- */
+async function tryDecode(arrayBuffer){
+  try{
+    ensureAudio();
+    return await new Promise((res,rej)=> audioCtx.decodeAudioData(arrayBuffer.slice(0), res, rej));
+  }catch(e){
+    log('decode failed', e && e.message ? e.message : e);
+    return null;
+  }
+}
+
+/* --- create <audio> element fallback --- */
+function createMediaFromBlob(blob, name){
+  const url = URL.createObjectURL(blob);
+  const el = new Audio(url);
+  el.preload = 'auto';
+  el.playsInline = true;
+  el.setAttribute('playsinline','');
+  el.style.display = 'none';
+  document.body.appendChild(el);
+  audioElements.push(el);
+  el.addEventListener('loadedmetadata', ()=>{
+    log('loadedmetadata', name, el.duration);
+    try{
+      const d = calcDuration();
+      if(isFinite(d)){ seek.max = d; total.textContent = fmtTime(d); }
+    }catch(e){}
+  });
+  return { mode:'media', el, blobUrl:url, fileName:name };
+}
+
+/* --- helpers --- */
+function calcDuration(){
+  if(tracks.vocals?.mode==='buffer' && tracks.backing?.mode==='buffer'){
+    return Math.min(tracks.vocals.buffer.duration, tracks.backing.buffer.duration);
+  }
+  if(tracks.vocals?.mode==='media' && tracks.backing?.mode==='media' && tracks.vocals.el.duration && tracks.backing.el.duration){
+    return Math.min(tracks.vocals.el.duration, tracks.backing.el.duration);
+  }
+  if(tracks.vocals?.mode==='buffer' && tracks.backing?.mode==='media' && tracks.backing.el.duration){
+    return Math.min(tracks.vocals.buffer.duration, tracks.backing.el.duration);
+  }
+  if(tracks.vocals?.mode==='media' && tracks.backing?.mode==='buffer' && tracks.vocals.el.duration){
+    return Math.min(tracks.vocals.el.duration, tracks.backing.buffer.duration);
+  }
+  return Infinity;
+}
+
+/* ---------- File inputs (ZIP & files) ---------- */
+zipInput.addEventListener('change', async ()=>{
+  const f = zipInput.files[0]; zipInput.value='';
+  if(!f) return;
+  log('ZIP select', f.name);
+  try{
+    const zip = await JSZip.loadAsync(f);
+    const names = Object.keys(zip.files).filter(n=>!zip.files[n].dir && /\.(wav|mp3|m4a|aac|ogg)$/i.test(n));
+    if(names.length < 2){ alert('zipに音声ファイルが2つ以上必要です'); return; }
+    const vName = names.find(n=>/vocals?/i.test(n)) || names[0];
+    const bName = names.find(n=>/(inst|back|no[_-]?vocals?)/i.test(n) && n!==vName) || names.find(n=>n!==vName) || names[1];
+    log('selected entries', vName, bName);
+    const vAB = await zip.file(vName).async('arraybuffer');
+    const bAB = await zip.file(bName).async('arraybuffer');
+    const bufV = await tryDecode(vAB);
+    const bufB = await tryDecode(bAB);
+    if(bufV && bufB){
+      tracks.vocals = { mode:'buffer', buffer:bufV, fileName:vName };
+      tracks.backing = { mode:'buffer', buffer:bufB, fileName:bName };
+    }else{
+      tracks.vocals = createMediaFromBlob(new Blob([vAB]), vName);
+      tracks.backing = createMediaFromBlob(new Blob([bAB]), bName);
     }
-  });
-}
-
-function startAt(t){
-  initCtx();
-  stopSources();
-
-  sources.v = ctx.createBufferSource();
-  sources.b = ctx.createBufferSource();
-  sources.v.buffer = buffers.v;
-  sources.b.buffer = buffers.b;
-
-  sources.v.connect(gainV);
-  sources.b.connect(gainB);
-
-  startTime = ctx.currentTime;
-  sources.v.start(startTime, t);
-  sources.b.start(startTime, t);
-
-  isPlaying = true;
-}
-
-/* ================= UI ================= */
-playBtn.onclick = async ()=>{
-  initCtx();
-  await ctx.resume();
-  startAt(playPos);
-};
-
-seek.oninput = e=>{
-  playPos = Number(e.target.value);
-  cur.textContent = fmt(playPos);
-  if(isPlaying){
-    startAt(playPos);
-  }
-};
-
-volV.oninput = ()=>gainV.gain.value = volV.value;
-volB.oninput = ()=>gainB.gain.value = volB.value;
-master.oninput = ()=>masterGain.gain.value = master.value;
-
-/* ================= ファイル読み込み（修正済み） ================= */
-async function loadBuffers(vFile, bFile){
-  initCtx();
-  buffers.v = await ctx.decodeAudioData(await vFile.arrayBuffer());
-  buffers.b = await ctx.decodeAudioData(await bFile.arrayBuffer());
-  const d = Math.min(buffers.v.duration, buffers.b.duration);
-  seek.max = d;
-  total.textContent = fmt(d);
-  playBtn.disabled = false;
-  log("loaded: " + vFile.name + " / " + bFile.name);
-}
-
-filesInput.onchange = ()=>{
-  if(filesInput.files.length >= 2){
-    loadBuffers(filesInput.files[0], filesInput.files[1]);
-  }
-};
-
-zipInput.onchange = async ()=>{
-  const zip = await JSZip.loadAsync(zipInput.files[0]);
-  const names = Object.keys(zip.files).filter(n=>/\.(wav|mp3|m4a|ogg)$/i.test(n));
-  if(names.length < 2){
-    alert("ZIP内に音声が2つ必要です");
-    return;
-  }
-  const v = await zip.file(names[0]).async("blob");
-  const b = await zip.file(names[1]).async("blob");
-  loadBuffers(v,b);
-};
-
-/* ================= ビジュアライザ ================= */
-const canvas = document.getElementById('viz');
-const c = canvas.getContext('2d');
-
-function resize(){
-  canvas.width = canvas.clientWidth;
-  canvas.height = canvas.clientHeight;
-}
-resize();
-window.addEventListener('resize', resize);
-
-function draw(){
-  requestAnimationFrame(draw);
-  if(!analyser) return;
-  const data = new Uint8Array(analyser.frequencyBinCount);
-  analyser.getByteFrequencyData(data);
-  c.clearRect(0,0,canvas.width,canvas.height);
-  data.forEach((v,i)=>{
-    c.fillStyle="#38bdf8";
-    c.fillRect(i, canvas.height, 1, -v);
-  });
-}
-draw();
-
-/* ================= バックグラウンド対応 ================= */
-document.addEventListener("visibilitychange",()=>{
-  if(document.hidden && isPlaying){
-    playPos += ctx.currentTime - startTime;
-    stopSources();
-    isPlaying = false;
+    filename.textContent = `${tracks.vocals.fileName} / ${tracks.backing.fileName}`;
+    const d = calcDuration(); if(isFinite(d)){ seek.max = d; total.textContent = fmtTime(d); }
+    playBtn.disabled = stopBtn.disabled = false;
+    log('tracks set', {vocals:tracks.vocals.fileName, backing:tracks.backing.fileName, modes:[tracks.vocals.mode, tracks.backing.mode]});
+  }catch(e){
+    console.error(e);
+    log('zip read failed', e && e.message ? e.message : e);
+    alert('ZIP 読み込みに失敗しました');
   }
 });
+
+filesInput.addEventListener('change', async ()=>{
+  const files = Array.from(filesInput.files); filesInput.value='';
+  if(files.length < 2){ alert('2ファイル選択してください'); return; }
+  const vocalsFile = files.find(f=>/vocals/i.test(f.name)) || files[0];
+  const backingFile = files.find(f=>/(no_vocals|no-vocals|back|inst|instrumental)/i.test(f.name)) || files[1];
+  log('files select', vocalsFile.name, backingFile.name);
+  const vAb = await vocalsFile.arrayBuffer(); const bAb = await backingFile.arrayBuffer();
+  const bufV = await tryDecode(vAb); const bufB = await tryDecode(bAb);
+  if(bufV && bufB){
+    tracks.vocals = { mode:'buffer', buffer:bufV, fileName:vocalsFile.name };
+    tracks.backing = { mode:'buffer', buffer:bufB, fileName:backingFile.name };
+  }else{
+    tracks.vocals = createMediaFromBlob(new Blob([vAb]), vocalsFile.name);
+    tracks.backing = createMediaFromBlob(new Blob([bAb]), backingFile.name);
+  }
+  filename.textContent = `${tracks.vocals.fileName} / ${tracks.backing.fileName}`;
+  const d = calcDuration(); if(isFinite(d)){ seek.max = d; total.textContent = fmtTime(d); }
+  playBtn.disabled = stopBtn.disabled = false; log('tracks set', {vocals:tracks.vocals.fileName, backing:tracks.backing.fileName});
+});
+
+/* ---------- Buffer helpers ---------- */
+function stopBufferSource(role){
+  const s = bufferSources[role];
+  if(s && s.node){
+    try{ s.node.stop(); }catch(e){}
+  }
+  bufferSources[role] = null;
+}
+function startBufferSource(role, offsetSec){
+  if(!audioCtx) ensureAudio();
+  const now = audioCtx.currentTime;
+  const s = audioCtx.createBufferSource();
+  s.buffer = tracks[role].buffer;
+  s.connect(role==='vocals'?gainV:gainB);
+  s.loop = false;
+  s.start(now, offsetSec);
+  bufferSources[role] = { node:s, offset:offsetSec, startedAt: now };
+  s.onended = ()=>{ if(!s.loop) stopAll(); };
+}
+
+/* start/stop both buffers (used by startAll or seekWhilePlaying) */
+function stopBufferPlayback(){
+  ['vocals','backing'].forEach(k=>{ const s = bufferSources[k]; if(s && s.node){ try{ s.node.stop(); }catch(e){} } bufferSources[k]=null; });
+}
+function startBufferPlayback(offsetSec){
+  if(!audioCtx) ensureAudio();
+  stopBufferPlayback();
+  const now = audioCtx.currentTime;
+  const sV = audioCtx.createBufferSource(); sV.buffer = tracks.vocals.buffer; sV.connect(gainV);
+  const sB = audioCtx.createBufferSource(); sB.buffer = tracks.backing.buffer; sB.connect(gainB);
+  sV.loop = sB.loop = false;
+  sV.start(now, offsetSec);
+  sB.start(now, offsetSec);
+  bufferSources.vocals = { node: sV, offset: offsetSec, startedAt: now };
+  bufferSources.backing = { node: sB, offset: offsetSec, startedAt: now };
+  sV.onended = ()=>{ if(!sV.loop) stopAll(); };
+  // ensure playing state set
+  isPlaying = true; playBtn.textContent = '停止';
+}
+
+/* --- Media node connect --- */
+function ensureMediaNode(role){
+  const t = tracks[role];
+  if(!t || t.mode !== 'media' || !t.el) return;
+  try{
+    if(!audioCtx) ensureAudio();
+    if(!t.node){
+      t.node = audioCtx.createMediaElementSource(t.el);
+    }else{
+      try{ t.node.disconnect(); }catch(e){}
+    }
+    t.node.connect(role==='vocals'?gainV:gainB);
+    try{ gainV.connect(masterGain); gainB.connect(masterGain); masterGain.connect(analyser); analyser.connect(audioCtx.destination); }catch(e){}
+    log('media node connected', role);
+  }catch(e){
+    log('createMediaElementSource failed for', role, e && e.message ? e.message : e);
+  }
+}
+
+/* ---------- Start / Stop (既存) ---------- */
+async function startAll(){
+  if(!tracks.vocals || !tracks.backing) return alert('ファイルを読み込んでください');
+  ensureAudio();
+  if(audioCtx.state === 'suspended'){ try{ await audioCtx.resume(); log('audioCtx resumed'); }catch(e){ log('resume failed', e); } }
+  try{ gainV.gain.value = Number(volV.value); gainB.gain.value = Number(volB.value); masterGain.gain.value = Number(master.value); }catch(e){}
+  if(tracks.vocals.mode === 'buffer' && tracks.backing.mode === 'buffer'){
+    const offset = Number(seek.value) || 0;
+    startBufferPlayback(offset);
+    isPlaying = true; playBtn.textContent='停止'; log('started buffer at', offset);
+    return;
+  }
+  for(const role of ['vocals','backing']){
+    const t = tracks[role];
+    if(t?.mode === 'media' && t.el){
+      ensureMediaNode(role);
+      if(t.el.readyState < 3){
+        await new Promise(resolve=>{
+          const onCan = ()=>{ t.el.removeEventListener('canplay', onCan); resolve(); };
+          t.el.addEventListener('canplay', onCan);
+          setTimeout(resolve, 2000);
+        });
+      }
+      try{ t.el.currentTime = Number(seek.value) || 0; }catch(e){}
+    }
+  }
+  const promises = [];
+  if(tracks.vocals.mode === 'media' && tracks.vocals.el) promises.push(tracks.vocals.el.play().catch(e=>{ log('vocals.play fail', e && e.name); return e; }));
+  if(tracks.backing.mode === 'media' && tracks.backing.el) promises.push(tracks.backing.el.play().catch(e=>{ log('backing.play fail', e && e.name); return e; }));
+  const res = await Promise.all(promises);
+  log('media play results', res);
+  isPlaying = true; playBtn.textContent='停止';
+}
+
+function stopAll(){
+  if(tracks.vocals?.mode === 'buffer' || tracks.backing?.mode === 'buffer'){
+    try{ pausedOffset = getBufferCurrent(); }catch(e){ pausedOffset = Number(seek.value) || 0; }
+    stopBufferPlayback();
+  }
+  ['vocals','backing'].forEach(role=>{
+    const t = tracks[role];
+    if(t?.mode === 'media' && t.el){
+      try{ t.el.pause(); }catch(e){ log('pause failed', e); }
+    }
+  });
+  isPlaying = false; playBtn.textContent='再生';
+}
+
+/* ---------- Current time helpers ---------- */
+function getBufferCurrent(){
+  const a = bufferSources.vocals;
+  if(a && a.startedAt) return a.offset + (audioCtx.currentTime - a.startedAt);
+  return pausedOffset || Number(seek.value) || 0;
+}
+function getCurrentTime(){
+  try{
+    if(tracks.vocals?.mode==='buffer' || tracks.backing?.mode==='buffer'){
+      return getBufferCurrent();
+    }
+    if(tracks.vocals?.mode==='media' && tracks.backing?.mode==='media' && tracks.vocals.el && tracks.backing.el){
+      return Math.min(tracks.vocals.el.currentTime || 0, tracks.backing.el.currentTime || 0);
+    }
+    if(tracks.vocals?.mode==='media' && tracks.vocals.el) return tracks.vocals.el.currentTime || 0;
+    if(tracks.backing?.mode==='media' && tracks.backing.el) return tracks.backing.el.currentTime || 0;
+    return 0;
+  }catch(e){ return 0; }
+}
+
+/* ---------- Seek while playing: 継続再生仕様（強化） ---------- */
+async function seekWhilePlaying(time){
+  if(!tracks.vocals || !tracks.backing) return;
+  ensureAudio();
+  if(audioCtx.state === 'suspended'){ try{ await audioCtx.resume(); }catch(e){} }
+
+  // both buffers -> restart both synchronously
+  if(tracks.vocals.mode === 'buffer' && tracks.backing.mode === 'buffer'){
+    startBufferPlayback(Number(time) || 0);
+    return;
+  }
+
+  // mixed / media cases
+  // 1) set media currentTime
+  const mediaPromises = [];
+  for(const role of ['vocals','backing']){
+    const t = tracks[role];
+    if(t?.mode === 'media' && t.el){
+      try{ t.el.currentTime = Number(time) || 0; }catch(e){ log('set currentTime failed', role, e && e.message ? e.message : e); }
+      // ensure media will play
+      mediaPromises.push(t.el.play().catch(e=>{ log('media play fail during seek', role, e && e.name); return e; }));
+    }
+  }
+  // 2) restart any buffer sources to new offset
+  for(const role of ['vocals','backing']){
+    const t = tracks[role];
+    if(t?.mode === 'buffer'){
+      stopBufferSource(role);
+      startBufferSource(role, Number(time) || 0);
+    }
+  }
+  // wait for media play attempts (non-blocking, but helpful)
+  try{ await Promise.all(mediaPromises); }catch(e){}
+  // ensure UI state
+  isPlaying = true; playBtn.textContent = '停止';
+}
+
+/* ---------- UI wiring (seek 改良) ---------- */
+const playBtn = document.getElementById('playBtn');
+const stopBtn = document.getElementById('stopBtn');
+const seek = document.getElementById('seek');
+const cur = document.getElementById('cur');
+const total = document.getElementById('total');
+const volV = document.getElementById('volV');
+const volB = document.getElementById('volB');
+const master = document.getElementById('master');
+const filename = document.getElementById('filename');
+
+playBtn.addEventListener('click', ()=>{ if(isPlaying) stopAll(); else startAll(); });
+stopBtn.addEventListener('click', ()=> stopAll());
+
+let lastSeekByUser = false;
+seek.addEventListener('input', async ()=>{
+  lastSeekByUser = true;
+  const v = Number(seek.value);
+  cur.textContent = fmtTime(v);
+  if(isPlaying){
+    // seek and continue playing without pressing play
+    await seekWhilePlaying(v);
+  }else{
+    // stopped: update paused offset
+    pausedOffset = v;
+  }
+});
+seek.addEventListener('change', ()=>{ lastSeekByUser = false; });
+
+volV.addEventListener('input', ()=>{ ensureAudio(); if(gainV) gainV.gain.value = Number(volV.value); });
+volB.addEventListener('input', ()=>{ ensureAudio(); if(gainB) gainB.gain.value = Number(volB.value); });
+master.addEventListener('input', ()=>{ ensureAudio(); if(masterGain) masterGain.gain.value = Number(master.value); });
+
+setInterval(()=>{
+  if(isPlaying){
+    const c = getCurrentTime();
+    if(!lastSeekByUser){ seek.value = c; cur.textContent = fmtTime(c); }
+  }
+},200);
+
+/* ---------- Visibility / background handling ---------- */
+async function handleVisible() {
+  // when returning to visible, resume audioCtx and restart playback if needed
+  if(!resumeAfterVisible) return;
+  log('Returning visible — resuming playback at', pausedOffset);
+  try{
+    ensureAudio();
+    if(audioCtx.state === 'suspended') await audioCtx.resume();
+  }catch(e){ log('resume error', e && e.message ? e.message : e); }
+  // resume playback at pausedOffset
+  try{
+    // set seek UI
+    seek.value = pausedOffset;
+    cur.textContent = fmtTime(pausedOffset);
+    // use seekWhilePlaying to restart appropriate sources
+    await seekWhilePlaying(pausedOffset);
+  }catch(e){ log('resume playback failed', e && e.message ? e.message : e); }
+  resumeAfterVisible = false;
+}
+
+function handleHidden(){
+  if(!isPlaying) return;
+  // store current position and stop playback so we can safely restart later
+  try{ pausedOffset = getCurrentTime(); }catch(e){ pausedOffset = Number(seek.value) || 0; }
+  log('Hidden — saving position', pausedOffset, 'and stopping playback');
+  // we stop all but keep flag to restart on visible
+  stopAll();
+  resumeAfterVisible = true;
+}
+
+document.addEventListener('visibilitychange', ()=>{
+  if(document.hidden) handleHidden();
+  else handleVisible();
+});
+
+// pagehide/pageshow for mobile browsers (iOS)
+window.addEventListener('pagehide', ()=>{ if(document.hidden) handleHidden(); });
+window.addEventListener('pageshow', ()=>{ if(!document.hidden) handleVisible(); });
+
+/* ---------- visualizer（そのまま） ---------- */
+const canvas = document.getElementById('viz');
+const canvasCtx = canvas.getContext('2d');
+
+function resizeCanvas(){
+  const ratio = window.devicePixelRatio || 1;
+  canvas.width = Math.floor(canvas.clientWidth * ratio);
+  canvas.height = Math.floor(canvas.clientHeight * ratio);
+  canvasCtx.setTransform(ratio,0,0,ratio,0,0);
+}
+window.addEventListener('resize', resizeCanvas);
+resizeCanvas();
+
+let floatFreq = null;
+let timeDomain = null;
+
+function drawViz(){
+  const cw = canvas.clientWidth, ch = canvas.clientHeight;
+  canvasCtx.clearRect(0,0,cw,ch);
+  const leftPad = 80, topMargin = 10, bottomMargin = 44;
+  if(analyser && audioCtx){
+    const binCount = analyser.frequencyBinCount;
+    if(!floatFreq || floatFreq.length !== binCount){
+      floatFreq = new Float32Array(binCount);
+      timeDomain = new Float32Array(analyser.fftSize);
+    }
+    analyser.getFloatFrequencyData(floatFreq);
+    analyser.getFloatTimeDomainData(timeDomain);
+    // RMS -> dBFS
+    let sum = 0;
+    for(let i=0;i<timeDomain.length;i++) sum += timeDomain[i]*timeDomain[i];
+    const rms = Math.sqrt(sum / timeDomain.length) || 0.000001;
+    const dbfs = 20 * Math.log10(rms);
+    const dBTop = analyser.maxDecibels, dBBottom = analyser.minDecibels, dBRange = dBTop - dBBottom;
+    canvasCtx.font='11px monospace'; canvasCtx.textAlign='right'; canvasCtx.textBaseline='middle';
+    const usableH = ch - topMargin - bottomMargin;
+    for(let d = Math.ceil(dBBottom/10)*10; d <= dBTop; d+=10){
+      const y = topMargin + ((dBTop - d)/dBRange) * usableH;
+      canvasCtx.fillStyle='#142b31';
+      canvasCtx.fillRect(leftPad - 10, y-0.5, cw - leftPad - 12, 1);
+      canvasCtx.fillStyle='#9fbfd6';
+      canvasCtx.fillText(String(d)+' dB', leftPad - 12, y);
+    }
+    // bars
+    const nyquist = audioCtx.sampleRate / 2;
+    const binFreq = audioCtx.sampleRate / analyser.fftSize;
+    const usableW = cw - leftPad - 12;
+    const barW = Math.max(1, usableW / floatFreq.length);
+    for(let i=0;i<floatFreq.length;i++){
+      const fdb = floatFreq[i];
+      let v = (fdb - dBBottom) / dBRange; v = Math.max(0, Math.min(1, v));
+      const x = leftPad + i*barW; const h = v * usableH;
+      canvasCtx.fillStyle = (i%2)?'#38bdf8':'#7dd3fc';
+      canvasCtx.fillRect(x, topMargin + (usableH - h), Math.max(1, barW*0.9), h);
+    }
+    // log freq markers
+    const freqs = [50,75,100,150,200,300,400,500,750,1000,1500,2000,3000,5000,8000,10000,15000,20000];
+    canvasCtx.fillStyle='#cfeff7'; canvasCtx.font='11px monospace'; canvasCtx.textAlign='center'; canvasCtx.textBaseline='top';
+    const logMin = Math.log10(20), logMax = Math.log10(Math.max(20000, nyquist));
+    let lastX = -9999; const minLabelSpacing = 40;
+    for(const f of freqs){
+      if(f > nyquist) continue;
+      const lx = Math.log10(Math.max(f,20));
+      const pos = (lx - logMin) / (logMax - logMin);
+      const x = leftPad + pos * usableW;
+      if(x - lastX < minLabelSpacing){
+        canvasCtx.strokeStyle='#244e57'; canvasCtx.beginPath(); canvasCtx.moveTo(x+0.5, topMargin+2); canvasCtx.lineTo(x+0.5, topMargin+usableH-2); canvasCtx.stroke();
+        continue;
+      }
+      canvasCtx.strokeStyle='#244e57'; canvasCtx.beginPath(); canvasCtx.moveTo(x+0.5, topMargin+2); canvasCtx.lineTo(x+0.5, topMargin+usableH-2); canvasCtx.stroke();
+      const label = (f>=1000)?(f/1000)+'k':String(f);
+      canvasCtx.fillStyle='#cfeff7'; canvasCtx.fillText(label, x+0.5, topMargin + usableH + 6);
+      lastX = x;
+    }
+    // level + meter
+    canvasCtx.fillStyle='#9fbfd6'; canvasCtx.font='12px monospace'; canvasCtx.textAlign='left'; canvasCtx.textBaseline='top';
+    canvasCtx.fillText('Level: ' + dbfs.toFixed(1) + ' dBFS', leftPad + 6, 6);
+    const meterW = Math.min(usableW * 0.38, 180), meterH = 8, meterX = leftPad + 6, meterY = 28;
+    const meterNorm = Math.max(0, Math.min(1, (dbfs - dBBottom)/dBRange));
+    canvasCtx.fillStyle='#0e2a2f'; canvasCtx.fillRect(meterX, meterY, meterW, meterH);
+    canvasCtx.fillStyle='#38bdf8'; canvasCtx.fillRect(meterX, meterY, meterW*meterNorm, meterH);
+    canvasCtx.strokeStyle='#072f36'; canvasCtx.strokeRect(meterX, meterY, meterW, meterH);
+    canvasCtx.fillStyle='#9fbfd6'; canvasCtx.font='11px monospace'; canvasCtx.textAlign='left'; canvasCtx.textBaseline='bottom';
+    canvasCtx.fillText('Freq (Hz) / Level (dB)', leftPad + 6, ch - 6);
+  } else {
+    canvasCtx.fillStyle = '#243447';
+    for(let i=0;i<64;i++){
+      const x = i*(canvas.clientWidth/64), h = (Math.sin((Date.now()/300)+i)*0.4+0.5)*(canvas.clientHeight/3);
+      canvasCtx.fillRect(x, canvas.clientHeight/2 - h/2, canvas.clientWidth/64*0.85, h);
+    }
+  }
+  requestAnimationFrame(drawViz);
+}
+requestAnimationFrame(drawViz);
+
 </script>
 </body>
 </html>
