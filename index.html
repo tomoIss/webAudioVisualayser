@@ -9,37 +9,26 @@
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
 
 <style>
-/* ---------- 基本UI（既存） ---------- */
+/* （省略：元のスタイルをそのまま使ってください） */
 body{background:#0f1115;color:#eaeaf0;margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto}
 main{max-width:900px;margin:18px auto;padding:14px}
-h2 {background: linear-gradient(90deg, #38bdf8, #4ade80);-webkit-background-clip: text;-webkit-text-fill-color: transparent;font-weight: 700;text-align: center; /* 中央寄せ */text-shadow: 2px 2px 4px rgba(0,0,0,0.6); /* 影を追加 */}
-
+h2 {background: linear-gradient(90deg, #38bdf8, #4ade80);-webkit-background-clip: text;-webkit-text-fill-color: transparent;font-weight: 700;text-align: center; text-shadow: 2px 2px 4px rgba(0,0,0,0.6);}
 .top{display:grid;grid-template-columns:90px 1fr 90px;gap:16px;align-items:center}
 canvas{width:100%;height:300px;background:#0b0d12;border-radius:12px;display:block}
 .btn{background:linear-gradient(90deg,#38bdf8,#4ade80);color:#012;border:none;padding:8px 12px;border-radius:8px;font-weight:700;cursor:pointer}
 .small{font-size:13px;color:#b8cbe0}
 .log{background:#071018;color:#9fbfd6;font-size:.85rem;border-radius:8px;padding:8px;max-height:160px;overflow:auto;white-space:pre-wrap}
-
-/* スライダー（デフォルト：縦、canvas左右） */
 .v-slider{display:flex;flex-direction:column;align-items:center;height:180px}
 .v-label{font-size:13px;color:#b8cbe0;margin-bottom:12px}
 .slider-vert{width:150px;height:22px;transform:rotate(-90deg);margin-top:28px}
-
-/* viz テキスト */
-.viz-label{font-family:monospace;color:#9fbfd6;font-size:12px}
-
-/* ---------- レスポンシブ：縦画面時（portrait） ---------- */
 @media (orientation: portrait) {
   .top { grid-template-columns:1fr; grid-auto-rows:auto; gap:10px; }
   #viz { order: 1; }
   .v-slider { order: 2; flex-direction: row; justify-content: space-between; align-items:center; height:auto; padding:8px 6px; }
-  .v-slider + .v-slider { margin-top:6px; }
   .v-label { margin-bottom:0; margin-right:8px; font-size:12px; width:58px; text-align:left; }
   .slider-vert { transform: none; width:48%; margin-top:0; height:22px; }
   main{padding:12px}
 }
-
-/* ---------- 小幅端末用フォールバック ---------- */
 @media (max-width:760px) {
   .top { grid-template-columns:1fr; gap:10px; }
   .v-slider{ display:flex; flex-direction:row; justify-content:space-between; align-items:center; height:auto; padding:8px 6px; }
@@ -90,7 +79,7 @@ canvas{width:100%;height:300px;background:#0b0d12;border-radius:12px;display:blo
     <pre id="log" class="log">ready</pre>
   </div>
 </main>
-  
+
 <input id="zipInput" type="file" accept=".zip" hidden>
 <input id="filesInput" type="file" multiple hidden accept=".wav,.mp3,.m4a,.aac,.ogg">
 
@@ -99,14 +88,15 @@ canvas{width:100%;height:300px;background:#0b0d12;border-radius:12px;display:blo
 const logEl = document.getElementById('log');
 const log = (...a) => { logEl.textContent += a.join(' ') + '\n'; logEl.scrollTop = 1e9; };
 const fmt = s => !isFinite(s) ? '0:00' : `${Math.floor(s/60)}:${String(Math.floor(s)%60).padStart(2,'0')}`;
+let playhead = 0; // 再生位置（常に真実の値）
 
-/* ---------- audio （既存ロジック維持） ---------- */
+/* ---------- audio ---------- */
 let ctx, analyser, masterGain, gainV, gainB;
-let buffers = {}, sources = {}, startTime = 0, pausedAt = 0, playing = false;
+let buffers = { vocals: null, backing: null }, sources = {}, startTime = 0, playing = false;
 
 function ensureCtx(){
   if(ctx) return;
-  ctx = new (AudioContext||webkitAudioContext)();
+  ctx = new (window.AudioContext || window.webkitAudioContext)();
   analyser = ctx.createAnalyser();
   analyser.fftSize = 512;
   analyser.minDecibels = -100;
@@ -115,6 +105,12 @@ function ensureCtx(){
   gainV = ctx.createGain(); gainB = ctx.createGain();
   gainV.connect(masterGain); gainB.connect(masterGain);
   masterGain.connect(analyser); analyser.connect(ctx.destination);
+
+  // UI にあるスライダー値を初期ゲインに反映
+  gainV.gain.value = Number(document.getElementById('volV').value);
+  gainB.gain.value = Number(document.getElementById('volB').value);
+  masterGain.gain.value = Number(document.getElementById('master').value);
+
   log('AudioContext ready');
 }
 
@@ -123,9 +119,9 @@ async function decode(ab){
   return new Promise((res, rej)=> ctx.decodeAudioData(ab, res, rej));
 }
 
-/* ---------- load (ZIP arraybuffer 安定パス) ---------- */
+/* ---------- setTracks (ZIP / files 共通) ---------- */
 async function setTracks(vBlob, bBlob, vName, bName){
-  // 先に完全停止
+  // 既存の再生停止（あれば）
   if (playing) stop();
 
   const vb = await decode(await vBlob.arrayBuffer());
@@ -134,24 +130,27 @@ async function setTracks(vBlob, bBlob, vName, bName){
   buffers = { vocals: vb, backing: bb };
 
   const d = Math.min(vb.duration, bb.duration);
-  seek.max = d;
+  const seekEl = document.getElementById('seek');
+  seekEl.max = d; // 数値として扱われるように
+  seekEl.value = 0;
 
-  // ★ ここを追加
-  seek.value = 0;
-  pausedAt = 0;
+  // 再生位置を 0 に統一
+  playhead = 0;
   startTime = 0;
   playing = false;
 
-  cur.textContent = '0:00';
-  total.textContent = fmt(d);
+  document.getElementById('cur').textContent = '0:00';
+  document.getElementById('total').textContent = fmt(d);
   playBtn.textContent = '再生';
 
-  filename.textContent = vName + ' / ' + bName;
+  document.getElementById('filename').textContent = vName + ' / ' + bName;
   playBtn.disabled = stopBtn.disabled = false;
 
   log('tracks loaded (reset to 0:00)');
 }
 
+/* ---------- ZIP / file input handlers ---------- */
+const zipInput = document.getElementById('zipInput');
 zipInput.onchange = async () => {
   const file = zipInput.files[0];
   zipInput.value = '';
@@ -166,9 +165,7 @@ zipInput.onchange = async () => {
     log('ZIP tracks:', vName, bName);
     const vAB = await zip.file(vName).async('arraybuffer');
     const bAB = await zip.file(bName).async('arraybuffer');
-    const vBlob = new Blob([vAB]);
-    const bBlob = new Blob([bAB]);
-    await setTracks(vBlob, bBlob, vName, bName);
+    await setTracks(new Blob([vAB]), new Blob([bAB]), vName, bName);
   }catch(e){
     console.error(e);
     log('ZIP load failed:', e && e.message ? e.message : e);
@@ -176,64 +173,100 @@ zipInput.onchange = async () => {
   }
 };
 
+const filesInput = document.getElementById('filesInput');
 filesInput.onchange = async () => {
   const f = [...filesInput.files];
   filesInput.value = '';
   if(f.length < 2) return alert('2ファイル必要');
 
-  // ファイル名から自動判別
-  const vFile = f.find(f => /vocals?/i.test(f.name)) || f[0];
-  const bFile = f.find(f => /(inst|back|no[_-]?vocals?)/i.test(f.name) && f !== vFile) 
-              || f.find(f => f !== vFile);
+  const vFile = f.find(x => /vocals?/i.test(x.name)) || f[0];
+  const bFile = f.find(x => /(inst|back|no[_-]?vocals?)/i.test(x.name) && x !== vFile) || f.find(x => x !== vFile);
 
-  // 判別したファイルを渡す
   await setTracks(vFile, bFile, vFile.name, bFile.name);
 };
 
-/* ---------- play / stop（既存ロジック維持） ---------- */
+/* ---------- play / stop ---------- */
+const playBtn = document.getElementById('playBtn');
+const stopBtn = document.getElementById('stopBtn');
+
 function stop(){
   Object.values(sources).forEach(s => { try{ s.stop(); }catch{} });
   sources = {};
-  pausedAt = ctx ? ctx.currentTime - startTime : pausedAt;
+  if (playing && ctx) {
+    // 停止時点を playhead に保存
+    playhead = Math.max(0, ctx.currentTime - startTime);
+  }
   playing = false;
   playBtn.textContent = '再生';
 }
 
 function start(){
+  if(!buffers.vocals || !buffers.backing) { alert('トラックが読み込まれていません'); return; }
   ensureCtx();
   ctx.resume();
+
+  // 既存再生を止めてから（再生成が必要）
   stop();
-  const offset = Number(seek.value) || 0;
-  startTime = ctx.currentTime - offset;
+
+  // 再生開始位置を playhead からにする
+  playhead = Number(document.getElementById('seek').value) || playhead || 0;
+  startTime = ctx.currentTime - playhead;
+
   ['vocals','backing'].forEach(k=>{
     const s = ctx.createBufferSource();
     s.buffer = buffers[k];
     s.connect(k === 'vocals' ? gainV : gainB);
-    s.start(0, offset);
+    // 再生開始は playhead 秒から
+    s.start(0, playhead);
     sources[k] = s;
   });
+
   playing = true;
   playBtn.textContent = '停止';
 }
 
-function getTime(){ return playing ? ctx.currentTime - startTime : pausedAt; }
+function getTime(){
+  if (playing && ctx) {
+    playhead = Math.max(0, ctx.currentTime - startTime);
+  }
+  return playhead;
+}
 
 /* ---------- UI wiring ---------- */
 playBtn.onclick = () => playing ? stop() : start();
 stopBtn.onclick = stop;
-volV.oninput = () => gainV && (gainV.gain.value = volV.value);
-volB.oninput = () => gainB && (gainB.gain.value = volB.value);
-master.oninput = () => masterGain && (masterGain.gain.value = master.value);
-seek.oninput = () => { cur.textContent = fmt(seek.value); if(playing) start(); };
+
+// ゲイン操作
+document.getElementById('volV').oninput = (e) => { ensureCtx(); gainV.gain.value = Number(e.target.value); };
+document.getElementById('volB').oninput = (e) => { ensureCtx(); gainB.gain.value = Number(e.target.value); };
+document.getElementById('master').oninput = (e) => { ensureCtx(); masterGain.gain.value = Number(e.target.value); };
+
+// シーク操作
+const seek = document.getElementById('seek');
+const cur = document.getElementById('cur');
+
+seek.addEventListener('input', (e) => {
+  const v = Number(e.target.value) || 0;
+  cur.textContent = fmt(v);
+  // 再生中なら即座にその位置から再生し直す
+  if (playing) {
+    // start() は stop() を呼ぶので再生位置に反映される
+    start();
+  } else {
+    playhead = v;
+  }
+});
+
+// 定期UI更新（再生中は playhead を反映）
 setInterval(()=>{
-  if(playing){
+  if (playing) {
     const t = getTime();
     seek.value = t;
     cur.textContent = fmt(t);
   }
-},200);
+}, 200);
 
-/* ---------- visualizer（ラベル詰まり対策：log配置＋間引き） ---------- */
+/* ---------- visualizer（元ロジックそのまま） ---------- */
 const canvas = document.getElementById('viz');
 const ctx2 = canvas.getContext('2d');
 
@@ -241,7 +274,7 @@ function resizeCanvas(){
   const ratio = window.devicePixelRatio || 1;
   canvas.width = Math.floor(canvas.clientWidth * ratio);
   canvas.height = Math.floor(canvas.clientHeight * ratio);
-  ctx2.setTransform(ratio,0,0,ratio,0,0); // scale to CSS pixels
+  ctx2.setTransform(ratio,0,0,ratio,0,0);
 }
 window.addEventListener('resize', resizeCanvas);
 resizeCanvas();
@@ -255,13 +288,12 @@ function drawViz(){
   const ch = canvas.clientHeight;
   ctx2.clearRect(0,0,cw,ch);
 
-  // margins to avoid overlap / cut-off
-  const leftPad = 80;      // 広めに確保
+  const leftPad = 80;
   const topMargin = 10;
-  const bottomMargin = 44; // 周波数ラベルと凡例の領域
+  const bottomMargin = 44;
 
   if(analyser && ctx){
-    const binCount = analyser.frequencyBinCount; // fftSize/2
+    const binCount = analyser.frequencyBinCount;
     if(floatFreq == null || floatFreq.length !== binCount){
       floatFreq = new Float32Array(binCount);
       freqBins = new Uint8Array(binCount);
@@ -272,13 +304,11 @@ function drawViz(){
     analyser.getByteFrequencyData(freqBins);
     analyser.getFloatTimeDomainData(timeDomain);
 
-    // RMS -> dBFS
     let sum = 0;
     for(let i=0;i<timeDomain.length;i++) sum += timeDomain[i]*timeDomain[i];
     const rms = Math.sqrt(sum / timeDomain.length) || 0.000001;
     const dbfs = 20 * Math.log10(rms);
 
-    // dB scale left
     const dBTop = analyser.maxDecibels;
     const dBBottom = analyser.minDecibels;
     const dBRange = dBTop - dBBottom;
@@ -288,7 +318,6 @@ function drawViz(){
 
     const usableH = ch - topMargin - bottomMargin;
 
-    // horizontal grid + labels
     for(let d = Math.ceil(dBBottom/10)*10; d <= dBTop; d += 10){
       const y = topMargin + ((dBTop - d) / dBRange) * usableH;
       ctx2.fillStyle = '#142b31';
@@ -297,9 +326,7 @@ function drawViz(){
       ctx2.fillText(String(d) + ' dB', leftPad - 12, y);
     }
 
-    // spectral bars (linear per-bin, leftPad offset)
     const nyquist = ctx.sampleRate / 2;
-    const binFreq = ctx.sampleRate / analyser.fftSize;
     const usableWidth = cw - leftPad - 12;
     const barWidth = Math.max(1, usableWidth / floatFreq.length);
     for(let i=0;i<floatFreq.length;i++){
@@ -312,42 +339,35 @@ function drawViz(){
       ctx2.fillRect(x, topMargin + (usableH - h), Math.max(1, barWidth*0.9), h);
     }
 
-    // frequency markers: use log scale for x positions to spread low frequencies
     const freqs = [50,75,100,150,200,300,400,500,750,1000,1500,2000,3000,5000,8000,10000,15000,20000];
     ctx2.fillStyle = '#cfeff7';
     ctx2.font = '11px monospace';
     ctx2.textAlign = 'center';
     ctx2.textBaseline = 'top';
 
-    // log mapping params
-    const logMin = Math.log10(20); // floor at 20Hz
+    const logMin = Math.log10(20);
     const logMax = Math.log10(Math.max(20000, nyquist));
     let lastLabelX = -9999;
-    const minLabelSpacing = 40; // px, 最低間隔
+    const minLabelSpacing = 40;
 
     for(const f of freqs){
       if(f > nyquist) continue;
       const lx = Math.log10(Math.max(f,20));
       const pos = (lx - logMin) / (logMax - logMin);
       const x = leftPad + pos * usableWidth;
-      // skip labels that are too close
       if(x - lastLabelX < minLabelSpacing) {
-        // still draw faint tick line if very close, but skip label text
         ctx2.strokeStyle = '#244e57';
         ctx2.beginPath(); ctx2.moveTo(x+0.5, topMargin+2); ctx2.lineTo(x+0.5, topMargin+usableH-2); ctx2.stroke();
         continue;
       }
-      // draw vertical marker
       ctx2.strokeStyle = '#244e57';
       ctx2.beginPath(); ctx2.moveTo(x+0.5, topMargin+2); ctx2.lineTo(x+0.5, topMargin+usableH-2); ctx2.stroke();
-      // label (kHz if >=1000)
       const label = (f >= 1000) ? (f/1000)+'k' : String(f);
       ctx2.fillStyle = '#cfeff7';
       ctx2.fillText(label, x+0.5, topMargin + usableH + 6);
       lastLabelX = x;
     }
 
-    // RMS value + meter (top-left)
     ctx2.fillStyle = '#9fbfd6';
     ctx2.font = '12px monospace';
     ctx2.textAlign = 'left';
@@ -367,7 +387,6 @@ function drawViz(){
     ctx2.strokeStyle = '#072f36';
     ctx2.strokeRect(meterX, meterY, meterW, meterH);
 
-    // legend bottom-left
     ctx2.fillStyle = '#9fbfd6';
     ctx2.font = '11px monospace';
     ctx2.textAlign = 'left';
@@ -375,7 +394,6 @@ function drawViz(){
     ctx2.fillText('Freq (Hz) / Level (dB)', leftPad + 6, ch - 6);
 
   } else {
-    // idle animation centered
     ctx2.fillStyle = '#243447';
     for(let i=0;i<64;i++){
       const x = i*(canvas.clientWidth/64), h = (Math.sin((Date.now()/300)+i)*0.4+0.5)*(canvas.clientHeight/3);
