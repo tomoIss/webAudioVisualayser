@@ -125,15 +125,31 @@ async function decode(ab){
 
 /* ---------- load (ZIP arraybuffer 安定パス) ---------- */
 async function setTracks(vBlob, bBlob, vName, bName){
+  // 先に完全停止
+  if (playing) stop();
+
   const vb = await decode(await vBlob.arrayBuffer());
   const bb = await decode(await bBlob.arrayBuffer());
+
   buffers = { vocals: vb, backing: bb };
+
   const d = Math.min(vb.duration, bb.duration);
   seek.max = d;
+
+  // ★ ここを追加
+  seek.value = 0;
+  pausedAt = 0;
+  startTime = 0;
+  playing = false;
+
+  cur.textContent = '0:00';
   total.textContent = fmt(d);
+  playBtn.textContent = '再生';
+
   filename.textContent = vName + ' / ' + bName;
   playBtn.disabled = stopBtn.disabled = false;
-  log('tracks loaded');
+
+  log('tracks loaded (reset to 0:00)');
 }
 
 zipInput.onchange = async () => {
