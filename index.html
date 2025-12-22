@@ -177,10 +177,33 @@ const filesInput = document.getElementById('filesInput');
 filesInput.onchange = async () => {
   const f = [...filesInput.files];
   filesInput.value = '';
-  if(f.length < 2) return alert('2ファイル必要');
+  if (f.length < 2) return alert('2ファイル必要');
 
-  const vFile = f.find(x => /vocals?/i.test(x.name)) || f[0];
-  const bFile = f.find(x => /(inst|back|no[_-]?vocals?)/i.test(x.name) && x !== vFile) || f.find(x => x !== vFile);
+  const isVocal = name => /vocals?|vocal|vox|歌|ボーカル/i.test(name);
+  const isBack  = name => /inst|back|karaoke|no[_-]?vocals?|伴奏/i.test(name);
+
+  let vFile = null;
+  let bFile = null;
+
+  // ★ 両方を独立して判定
+  for (const file of f) {
+    if (!vFile && isVocal(file.name)) vFile = file;
+    if (!bFile && isBack(file.name))  bFile = file;
+  }
+
+  // ★ 片方だけ見つかった場合の補完
+  if (vFile && !bFile) bFile = f.find(x => x !== vFile);
+  if (bFile && !vFile) vFile = f.find(x => x !== bFile);
+
+  // ★ 両方不明なら順序維持
+  if (!vFile || !bFile) {
+    log('filename ambiguous, keep order');
+    vFile = f[0];
+    bFile = f[1];
+  }
+
+  log('Vocals:', vFile.name);
+  log('Backing:', bFile.name);
 
   await setTracks(vFile, bFile, vFile.name, bFile.name);
 };
