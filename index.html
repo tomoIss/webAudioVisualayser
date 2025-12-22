@@ -179,8 +179,13 @@ filesInput.onchange = async () => {
   filesInput.value = '';
   if (f.length < 2) return alert('2ファイル必要');
 
-  const isVocal = name => /vocals?|vocal|vox|歌|ボーカル/i.test(name);
-  const isBack  = name => /inst|back|karaoke|no[_-]?vocals?|伴奏/i.test(name);
+  const isNoVocal = name => /no[_-]?vocals?/i.test(name);
+
+const isBack = name =>
+  /inst|back|karaoke|伴奏/i.test(name) || isNoVocal(name);
+
+const isVocal = name =>
+  !isNoVocal(name) && /vocals?|vocal|vox|歌|ボーカル/i.test(name);
 
   let vFile = null;
   let bFile = null;
